@@ -2858,7 +2858,7 @@ class CuaDriverBackend(ComputerUseBackend):
         # backend uses — so users never hit an opaque `No module named 'mcp'`
         # at invoke time. Auto-install is gated by `security.allow_lazy_installs`
         # (default on); when it's disabled or fails, ensure() raises
-        # FeatureUnavailable carrying an actionable `uv pip install mcp==…`
+        # InstallError carrying an actionable `uv pip install mcp==…`
         # hint, which surfaces via the backend-unavailable path in tool.py.
         from pm import ensure_import as _lazy_ensure
         _lazy_ensure("computer-use")

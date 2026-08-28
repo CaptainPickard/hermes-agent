@@ -127,7 +127,7 @@ def _import_elevenlabs():
     error-handling paths keep working.
     """
     try:
-        from pm import InstallError as FeatureUnavailable, ensure_import as ensure
+        from pm import ensure_import as ensure
         ensure("tts-premium")
     except ImportError:
         # pm module itself missing — fall through to the raw import
