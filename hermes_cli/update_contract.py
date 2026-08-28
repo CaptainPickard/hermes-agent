@@ -155,10 +155,10 @@ def evaluate_update_admission(project_root: Path) -> Optional[UpdateRefusal]:
                 message=format_docker_update_message(),
                 update_command=recommended_update_command_for_method("docker"),
             )
-        if is_nix_install_method(method) or method == "apt":
+        if is_nix_install_method(method):
             command = recommended_update_command_for_method(method)
             return UpdateRefusal(
-                code=method if method == "apt" else "nix",
+                code="nix",
                 message=command,
                 update_command=command,
             )
