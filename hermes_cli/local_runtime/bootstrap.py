@@ -110,11 +110,14 @@ def _stop_state_server(state: dict) -> None:
         os.kill(int(pid), signal.SIGTERM)
     except (OSError, ValueError):
         return
+    # Liveness probe: do NOT use os.kill(pid, 0) here — on Windows that
+    # TERMINATES the process instead of probing (see endpoint.py). Use
+    # psutil.pid_exists, which is a safe existence check on all platforms.
+    import psutil  # type: ignore
+
     # Give it a moment to release the port and the GPU.
     for _ in range(50):
-        try:
-            os.kill(int(pid), 0)
-        except OSError:
+        if not psutil.pid_exists(int(pid)):
             return
         time.sleep(0.1)
 
