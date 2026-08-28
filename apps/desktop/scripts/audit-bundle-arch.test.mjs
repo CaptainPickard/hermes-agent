@@ -152,8 +152,27 @@ test('the emulated x64 agent-browser exe is exempt in a win32-arm64 payload', ()
   ]) {
     assert.equal(isExemptPath(relPath), true, relPath)
   }
-  // A non-agent-browser x64 binary in the payload store still fails.
+  // A non-chromium x64 binary in the payload store still fails: the
+  // chromium exemption is scoped to the store entries' -win64 trees, not
+  // to "any x64 exe under tools/".
   assert.equal(isExemptPath('resources/agent-payload/tools/something-1.0-win32-arm64/bin/thing.exe'), false)
+})
+
+test('the emulated x64 chromium trees are exempt in a win32-arm64 payload', () => {
+  // PlaywrightBrowser._CFT maps win32-arm64 to the CfT win64 (x64) build;
+  // store entries are named by playwright revision (dashes→underscores)
+  // and the zip extracts in place, so the x64 trees sit under
+  // chrome-win64 / chrome-headless-shell-win64 inside the entry.
+  for (const relPath of [
+    'resources/agent-payload/tools/chromium-1208/chrome-win64/chrome.exe',
+    'resources\\agent-payload\\tools\\chromium-1208\\chrome-win64\\chrome.dll',
+    'resources/agent-payload/tools/chromium_headless_shell-1208/chrome-headless-shell-win64/chrome-headless-shell.exe'
+  ]) {
+    assert.equal(isExemptPath(relPath), true, relPath)
+  }
+  // The linux/darwin chromium trees stay audited: no -win64 segment.
+  assert.equal(isExemptPath('resources/agent-payload/tools/chromium-1208/chrome-linux/chrome'), false)
+  assert.equal(isExemptPath('resources/agent-payload/tools/chromium-1208/chrome-mac-arm64/chrome'), false)
 })
 
 test('a random payload binary is not exempt', () => {
