@@ -788,3 +788,35 @@ def test_bootstrap_failure_never_raises(tmp_path, monkeypatch):
         "hermes_cli.local_runtime.supervisor.LlamaServerSupervisor", boom)
     result = bootstrap.ensure_local_runtime({"local_runtime": {"enabled": True}})
     assert result is None  # no exception escaped
+
+
+def test_stop_state_server_uses_pid_exists_not_os_kill(monkeypatch):
+    """Windows pitfall: os.kill(pid, 0) TERMINATES the process there
+    instead of probing. The liveness probe must go through
+    psutil.pid_exists: True (alive) first, then False (exited) — the loop
+    terminates as soon as the pid is gone."""
+    import sys
+    import types
+
+    from hermes_cli.local_runtime import bootstrap as bs
+
+    killed = []
+    monkeypatch.setattr("os.kill", lambda pid, sig: killed.append((pid, sig)))
+
+    calls = {"n": 0}
+
+    def _fake_pid_exists(pid):
+        calls["n"] += 1
+        return calls["n"] <= 2  # alive twice, then gone
+
+    # Inject a stub psutil module rather than monkeypatching the real one:
+    # hermetic, and the real psutil's native DLL may be unavailable in
+    # sandboxed test environments.
+    fake_psutil = types.SimpleNamespace(pid_exists=_fake_pid_exists)
+    monkeypatch.setitem(sys.modules, "psutil", fake_psutil)
+    monkeypatch.setattr(bs.time, "sleep", lambda s: None)
+
+    bs._stop_state_server({"pid": 4242})
+
+    assert killed == [(4242, 15)]  # SIGTERM sent once, no os.kill(pid, 0)
+    assert calls["n"] == 3  # loop terminated on the False probe
