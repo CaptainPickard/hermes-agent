@@ -89,8 +89,6 @@ def _sqlite_upgrade_hint(install_method: str | None = None) -> str:
     elif is_nix_install_method(method):
         # The Nix helper is prose guidance, not a literal shell command.
         action = recommended_update_command_for_method(method)
-    elif method == "apt":
-        action = f"run `{recommended_update_command_for_method(method)}`"
     else:
         action = "run `hermes update`"
     return (
