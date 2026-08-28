@@ -19,15 +19,18 @@ _SPEC.loader.exec_module(release)
 
 
 class TestNightlyTagShape:
-    def test_nightly_tag_for_date_is_next_minor(self):
-        assert release.nightly_tag_for_date("v0.27.2", "20260818103000") == "v0.28.0-nightly.20260818103000"
-        assert release.nightly_tag_for_date("v1.4.0", "20261231235959") == "v1.5.0-nightly.20261231235959"
+    def test_nightly_tag_for_date_is_next_patch(self):
+        """The authority's math: current stable's patch + 1, any patch."""
+        assert release.nightly_tag_for_date("0.27.4", "20260818103000") == "v0.27.5-nightly.20260818103000"
+        assert release.nightly_tag_for_date("1.4.0", "20261231235959") == "v1.4.1-nightly.20261231235959"
 
-    def test_no_stable_line_yet(self):
-        assert release.nightly_tag_for_date(None, "20260818103000") == "v0.1.0-nightly.20260818103000"
+    def test_v_prefixed_stable_tag_accepted(self):
+        """cmd_nightly passes the stable TAG (with the v) — the authority
+        strips it, so both forms produce the same tag."""
+        assert release.nightly_tag_for_date("v0.27.4", "20260818103000") == "v0.27.5-nightly.20260818103000"
 
     def test_shape_round_trips_through_the_nightly_matcher(self):
-        tag = release.nightly_tag_for_date("v0.27.2", "20260818103000")
+        tag = release.nightly_tag_for_date("0.27.4", "20260818103000")
         assert release._NIGHTLY_TAG_RE.fullmatch(tag)
 
     def test_legacy_date_only_shape_still_matches(self):
@@ -39,7 +42,7 @@ class TestNightlyTagShape:
         """THE invariant: a nightly tag must never parse as stable —
         otherwise stable users update onto nightlies."""
         for tag in (
-            release.nightly_tag_for_date("v0.27.2", "20260818103000"),
+            release.nightly_tag_for_date("0.27.4", "20260818103000"),
             "v0.28.0-nightly.20260818",
         ):
             assert release._SEMVER_TAG_RE.fullmatch(tag) is None, tag
@@ -54,11 +57,11 @@ class TestNightlyTagShape:
         """Second precision exists so manual fires can stack in one day;
         fixed-length pure-numeric identifiers order the same lexically
         (git -v:refname) and numerically (semver prerelease compare)."""
-        a = release.nightly_tag_for_date("v0.27.2", "20260818090000")
-        b = release.nightly_tag_for_date("v0.27.2", "20260818171500")
+        a = release.nightly_tag_for_date("0.27.4", "20260818090000")
+        b = release.nightly_tag_for_date("0.27.4", "20260818171500")
         assert a < b  # lexical == chronological at fixed length
 
-    def test_nightly_outversions_current_stable_loses_to_next_minor(self):
+    def test_nightly_outversions_current_stable_loses_to_next_patch(self):
         """The semver ordering that makes both channel switches work,
         checked with packaging's canonical comparison when available,
         else by electron-updater's documented precedence rules."""
@@ -68,8 +71,8 @@ class TestNightlyTagShape:
             import pytest
 
             pytest.skip("packaging not installed in this env")
-        nightly = Version("0.28.0-nightly.20260818103000".replace("-nightly.", "a"))
-        assert Version("0.27.2") < nightly < Version("0.28.0")
+        nightly = Version("0.27.5-nightly.20260818103000".replace("-nightly.", "a"))
+        assert Version("0.27.4") < nightly < Version("0.27.5")
 
 
 class TestNightlyDateStamps:
@@ -77,10 +80,10 @@ class TestNightlyDateStamps:
         """The prune window keys on the tag's own YYYYMMDD prefix, for
         both suffix shapes — a 14-digit suffix compared whole against an
         8-digit cutoff would be decided by string length, not by day."""
-        legacy = release._NIGHTLY_TAG_RE.fullmatch("v0.28.0-nightly.20260801")
-        stamped = release._NIGHTLY_TAG_RE.fullmatch("v0.28.0-nightly.20260801235959")
-        assert legacy and legacy.group(1)[:8] == "20260801"
-        assert stamped and stamped.group(1)[:8] == "20260801"
+        legacy = release._NIGHTLY_TAG_RE.fullmatch("v0.27.1-nightly.20260801")
+        stamped = release._NIGHTLY_TAG_RE.fullmatch("v0.27.1-nightly.20260801235959")
+        assert legacy and legacy.group(0).split("-nightly.")[1][:8] == "20260801"
+        assert stamped and stamped.group(0).split("-nightly.")[1][:8] == "20260801"
 
 
 class TestNightlyIsDrafted:
@@ -179,13 +182,17 @@ class TestNightlyStartsItsOwnBuild:
     def test_dispatches_the_build_for_the_tag_it_cut(self, monkeypatch, tmp_path):
         calls = self._calls(monkeypatch, tmp_path)
         dispatch = next(c for c in calls if c[:3] == ["gh", "workflow", "run"])
-        tag = "v0.28.0-nightly.20260818103000"
+        # get_last_tag is patched to v0.27.0 → the authority's patch+1 math
+        # cuts v0.27.1-nightly.20260818103000.
+        tag = "v0.27.1-nightly.20260818103000"
 
         assert "desktop-bundled-release.yml" in dispatch
-        # The tag travels three ways: as the input the build reads, and as
-        # the ref that pins which version of the workflow file runs.
+        # The tag travels as the INPUT the build reads. The workflow FILE
+        # itself is dispatched from the default branch — a tag-dispatched
+        # run scopes actions/cache under refs/heads/refs/tags/<tag>, a
+        # mangled per-tag scope no later nightly can restore.
         assert f"tag={tag}" in dispatch
-        assert "--ref" in dispatch and dispatch[dispatch.index("--ref") + 1] == tag
+        assert "--ref" in dispatch and dispatch[dispatch.index("--ref") + 1] != tag
         # Without this the build produces artifacts and attaches nothing.
         assert "upload_release=true" in dispatch
 
