@@ -80,8 +80,7 @@ def _require_azure_identity():
         return _ai
     except ImportError:
         try:
-            from pm import InstallError as FeatureUnavailable
-            from pm import ensure_import as ensure
+            from pm import InstallError, ensure_import
         except ImportError as exc:
             raise ImportError(
                 "The 'azure-identity' package is required for Azure AI "
@@ -90,8 +89,8 @@ def _require_azure_identity():
             ) from exc
 
         try:
-            ensure(_AZURE_IDENTITY_FEATURE)
-        except FeatureUnavailable as exc:
+            ensure_import(_AZURE_IDENTITY_FEATURE)
+        except InstallError as exc:
             raise ImportError(
                 "The 'azure-identity' package is required for Azure AI "
                 "Foundry Entra ID authentication. " + str(exc)

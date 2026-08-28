@@ -1495,13 +1495,11 @@ def interactive_setup() -> None:
 # ── Plugin entry point ────────────────────────────────────────────────────────
 
 def _install_hint() -> str:
-    """Build the Teams install hint from the canonical LAZY_DEPS pins.
+    """Build the Teams install hint string.
 
-    Derived (not hardcoded) so a pin bump in pyproject.toml — aiohttp
-    is CVE-pinned, so bumps happen — never leaves this string stale.
-    ``feature_install_command(venv_pip=True)`` targets the actual Hermes
-    venv in every layout and sidesteps Ubuntu 24.04's PEP 668 failure that
-    a bare ``pip install`` hint invites.
+    Prefers ``uv sync --frozen --extra teams`` (respects pyproject pinning);
+    falls back to a plain pip install of the two packages if that is
+    unavailable. Restarting the gateway also auto-installs via pm.
     """
     try:
         cmd = "uv sync --frozen --extra teams"
