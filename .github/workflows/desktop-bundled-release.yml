@@ -428,9 +428,9 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           ref: ${{ inputs.tag }}
-          sparse-checkout: |
-            scripts/r2-release.mjs
-          sparse-checkout-cone-mode: false
+          # Full checkout: r2-release.mjs imports ./msix-shared.mjs, so a
+          # sparse checkout of scripts/r2-release.mjs alone would die with
+          # ERR_MODULE_NOT_FOUND before the finalize run starts.
       - name: Download staged artifacts
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
@@ -465,6 +465,12 @@ jobs:
       AZURE_SIGN_PROFILE: ${{ vars.AZURE_SIGN_PROFILE }}
       AZURE_SIGN_PUBLISHER: ${{ vars.AZURE_SIGN_PUBLISHER }}
     steps:
+      # Full checkout: stage-msixbundle.mjs imports ./msix-shared.mjs and the
+      # job runs it with no checkout at all today — ERR_MODULE_NOT_FOUND.
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ inputs.tag }}
+
       - name: Download win legs' MSIX
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
