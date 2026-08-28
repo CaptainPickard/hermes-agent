@@ -31851,8 +31851,10 @@ def main():
         from hermes_cli.boot_bootstrap import maybe_run_boot_bootstrap
 
         maybe_run_boot_bootstrap(_Path(__file__).resolve().parents[1])
-    except Exception:
-        pass
+    except Exception as exc:
+        # maybe_run_boot_bootstrap itself never raises and logs internally;
+        # this guard covers the import/lookup path. Don't hide it silently.
+        logger.warning("boot bootstrap setup failed (continuing boot): %s", exc)
 
     # start_gateway() performs the full graceful teardown (adapters
     # disconnected, sessions saved + flushed, SQLite closed, cron/MCP stopped,

@@ -47,11 +47,10 @@ def _require_sdk(*, auto_install: bool = True):
         try:
             from pm import ensure_import as _lazy_ensure
             _lazy_ensure("otlp")
-        except ImportError:
-            pass  # pm unavailable — fall through to the import attempt
         except Exception:
-            # FeatureUnavailable (lazy installs disabled / declined / failed) —
-            # fall through; the import below raises OTLPUnavailable with the hint.
+            # ImportError (pm unavailable) or FeatureUnavailable (lazy
+            # installs disabled / declined / failed) — fall through; the
+            # import below raises OTLPUnavailable with the hint.
             pass
     try:
         from opentelemetry.sdk.trace import TracerProvider
