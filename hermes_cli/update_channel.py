@@ -225,62 +225,11 @@ def set_install_channel(
         )
 
     sha16 = install_id(root)
-    _write_channel_record(sha16, str(root), channel, artifact_channel=default_channel(root))
+    _write_channel_record(sha16, str(root), channel)
     return sha16
 
 
-def seed_install_channel(project_root: Optional[Path] = None) -> Optional[str]:
-    """Seed this install's channel record from the artifact, at boot.
-
-    The record is keyed by PATH and lives in config.yaml, so it outlives the
-    artifact that wrote it: install stable, uninstall, install nightly to
-    the same location, and the stale ``stable`` record would pin the new
-    nightly build to the stable feed forever. Installing a build of a given
-    flavor IS the choice of that flavor, so the artifact wins that argument.
-
-    ``artifactChannel`` records which artifact default the stored channel
-    was chosen against, which is what makes the two cases separable:
-
-    * it matches the current artifact — the stored channel is a deliberate
-      choice made on THIS flavor of build (``--set-channel``), so keep it.
-    * it differs, or is absent — the artifact changed under the record;
-      reseed to the new artifact's default.
-
-    Returns the channel written, or None when nothing needed writing.
-    Never raises: a config problem must not stop boot.
-    """
-    root = Path(project_root) if project_root is not None else _default_root()
-    try:
-        artifact = default_channel(root)
-        # Only artifacts with a release feed have a flavor to seed from; a
-        # source checkout's channel is not an artifact property.
-        if artifact not in (CHANNEL_STABLE, CHANNEL_NIGHTLY):
-            return None
-
-        import yaml
-
-        from hermes_cli.config import get_config_path
-
-        try:
-            raw = yaml.safe_load(get_config_path().read_text(encoding="utf-8-sig")) or {}
-        except (FileNotFoundError, OSError, ValueError):
-            raw = {}
-        record = channel_record(raw if isinstance(raw, dict) else {}, root)
-
-        # A deliberate choice made on THIS flavor of build stands.
-        if record.get("artifactChannel") == artifact:
-            return None
-
-        _write_channel_record(install_id(root), str(root), artifact, artifact_channel=artifact)
-        return artifact
-    except Exception as exc:  # noqa: BLE001 — seeding must never break boot
-        logger.debug("channel seeding skipped: %s", exc)
-        return None
-
-
-def _write_channel_record(
-    sha16: str, path: str, channel: str, artifact_channel: Optional[str] = None
-) -> None:
+def _write_channel_record(sha16: str, path: str, channel: str) -> None:
     """Write ``update.installs.<sha16>`` into config.yaml, preserving the rest."""
     import yaml
 
@@ -306,11 +255,6 @@ def _write_channel_record(
         installs[sha16] = record
     record["path"] = path  # DATA, for humans + doctor GC
     record["channel"] = channel
-    # Which artifact default this channel was chosen against. seed_install_channel
-    # compares it to the installed artifact to tell a deliberate choice from a
-    # record the artifact outlived.
-    if artifact_channel is not None:
-        record["artifactChannel"] = artifact_channel
 
     config_path.parent.mkdir(parents=True, exist_ok=True)
     tmp = config_path.with_suffix(config_path.suffix + ".tmp")
