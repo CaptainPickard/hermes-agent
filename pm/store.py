@@ -13,7 +13,6 @@ from contextlib import contextmanager
 from pathlib import Path
 
 _UA = {"User-Agent": "hermes-pm"}
-_LOOPBACK = ("http://127.0.0.1:", "http://localhost:", "http://[::1]:")
 
 
 ALL_TARGETS = (
@@ -105,35 +104,20 @@ def hash_url(url: str) -> str:
 
 
 def download(url: str, dest: Path, sha256: str, progress=None) -> Path:
-    import hashlib
-    import urllib.request
+    """Fetch url into dest dir, hash-verified, via the resumable downloader.
+    The digest is proven before the caller ever sees the file.
+    ``progress(done, total)`` ticks per chunk — a several-hundred-MB engine
+    archive on a slow line must never look hung. Partial state lives in the
+    store's managed partials area (outside scratch, keyed by sha256(url)), so
+    an interrupted = failed fetch resumes on the next call instead of
+    re-fetching the whole archive. Non-https/non-loopback urls are refused by
+    Download itself (ValueError)."""
+    from pm.downloader import Download, Source
 
-    """Fetch url into dest dir, hashing while streaming; the digest is proven
-    before the caller ever sees the file. ``progress(done, total)`` ticks per
-    block — a several-hundred-MB engine archive on a slow line must never
-    look hung (total is 0 when the server sends no Content-Length)."""
-    if not (url.startswith("https://") or url.startswith(_LOOPBACK)):
-        raise ValueError(f"refusing non-https url: {url}")
     dest.mkdir(parents=True, exist_ok=True)
     archive = dest / url.rsplit("/", 1)[-1]
-
-    digest = hashlib.sha256()
-    with urllib.request.urlopen(
-        urllib.request.Request(url, headers=_UA), timeout=600
-    ) as resp, open(archive, "wb") as out:
-        total = int(resp.headers.get("Content-Length") or 0)
-        done = 0
-        for block in iter(lambda: resp.read(1024 * 1024), b""):
-            digest.update(block)
-            out.write(block)
-            done += len(block)
-            if progress is not None:
-                progress(done, total)
-
-    actual = digest.hexdigest()
-    if actual != sha256:
-        archive.unlink(missing_ok=True)
-        raise RuntimeError(f"sha256 mismatch for {archive.name}: pinned {sha256}, got {actual}")
+    p = (lambda d, t, r: progress(d, t)) if progress is not None else None
+    Download([Source(url, archive, sha256)]).run(progress=p)
     return archive
 
 
