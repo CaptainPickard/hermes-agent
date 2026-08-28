@@ -766,6 +766,37 @@ def test_verify_probe_failure_reports_reason(tmp_path):
     assert "--version" in reason
 
 
+def test_probe_args_override_used_by_verify(tmp_path):
+    """A binary that rejects `--version` (ffmpeg's BtbN autobuild does) can
+    override the probe argv; verify() must honor the override everywhere
+    the probe is described, not just in the subprocess argv."""
+
+    class DashesTool(FakeTool):
+        probe_version = True
+        probe_args = ["-version"]
+
+    entry = tmp_path / "entry"
+    (entry / "bin").mkdir(parents=True)
+    (entry / "bin" / "faketool").write_bytes(b"\x00\x01 not an executable")
+    reason = DashesTool().verify(entry, current_target())
+    assert "-version" in reason
+    assert "--version" not in reason
+
+
+def test_ffmpeg_posix_layout_resolves_at_entry_root(tmp_path):
+    """martin-riedl zips are a single `ffmpeg` file at the zip root — the
+    package must resolve it there (bin/ffmpeg is the BtbN win32 layout)."""
+    from pm.registry import get_package
+
+    ffmpeg = get_package("ffmpeg")
+    entry = tmp_path / "entry"
+    entry.mkdir()
+    (entry / "ffmpeg").write_bytes(b"x")
+    assert ffmpeg.binary(entry, "linux-arm64") == entry / "ffmpeg"
+    assert ffmpeg.binary(entry, "darwin-x64") == entry / "ffmpeg"
+    assert ffmpeg.probe_args == ["-version"]
+
+
 def test_verify_arch_mismatch_reports_target(tmp_path):
     """A wrong-arch binary is diagnosed before any probe is attempted."""
     target = current_target()

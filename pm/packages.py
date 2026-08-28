@@ -46,6 +46,9 @@ class BinaryPackage(Package):
     binary_rel: dict[str, str] = {}
     flatten = True
     probe_version = True
+    # argv after the binary for the smoke probe. A package whose binary
+    # rejects the GNU double-dash form (ffmpeg's BtbN autobuild) overrides.
+    probe_args: list[str] = ["--version"]
     # Run the probe with cwd=binary.parent: dlopen'd backends (llama.cpp's
     # cudart) resolve their shared libraries from the working directory.
     probe_cwd = False
@@ -78,16 +81,16 @@ class BinaryPackage(Package):
             return ""
         try:
             proc = subprocess.run(
-                [str(binary), "--version"],
+                [str(binary), *self.probe_args],
                 capture_output=True,
                 timeout=60,
                 cwd=str(binary.parent) if self.probe_cwd else None,
                 env=self._probe_env(),
             )
         except OSError as e:
-            return f"could not exec {binary} --version: {e}"
+            return f"could not exec {binary} {' '.join(self.probe_args)}: {e}"
         except subprocess.TimeoutExpired:
-            return f"{binary} --version timed out after 60s"
+            return f"{binary} {' '.join(self.probe_args)} timed out after 60s"
         if proc.returncode != 0:
             return _probe_reason(binary, proc)
         return ""
@@ -416,18 +419,26 @@ class Gh(BinaryPackage):
 
 @register
 class Ffmpeg(BinaryPackage):
-    """Static ffmpeg (ships ffprobe too). GPLv3 builds; always bundled.
+    """Static ffmpeg. GPLv3 builds; always bundled.
     optional=False: ffmpeg is a required runtime tool. Sealed bundles ship
     it baked into the payload (post_update skips provisioning sealed
     installs — the artifact is atomic); dev installs get it re-ensured by
     step_provision_runtimes when the pin bumps. Windows: BtbN/FFmpeg-Builds
-    (dated autobuild tag). Linux + macOS: ffmpeg.martin-riedl.de (uniform
-    ZIP, published sha256)."""
+    (dated autobuild tag; ships ffprobe too). Linux + macOS:
+    ffmpeg.martin-riedl.de (uniform ZIP, published sha256; single-binary —
+    no ffprobe)."""
 
     name = "ffmpeg"
     optional = False
-    binary_rel = {"win32": "bin/ffmpeg.exe", "posix": "bin/ffmpeg"}
+    # martin-riedl (posix) zips are a single `ffmpeg` file at the zip root;
+    # BtbN (win32) zips carry bin/ffmpeg.exe under one top-level dir that
+    # flatten hoists.
+    binary_rel = {"win32": "bin/ffmpeg.exe", "posix": "ffmpeg"}
     flatten = True
+    # BtbN autobuild n9.0.1-11-ge47273f4d9 rejects `--version`
+    # ("Unrecognized option '-version'", exit 2880417800); `-version` works
+    # and is accepted by every ffmpeg build.
+    probe_args = ["-version"]
 
     def fetch_url(self, version: str, target: str) -> str:
         osname, arch = target.split("-")
