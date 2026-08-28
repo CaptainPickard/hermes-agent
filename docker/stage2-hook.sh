@@ -247,7 +247,7 @@ if [ "$needs_chown" = true ]; then
     # Hermes-owned subdirs: recursive chown is safe here because these are
     # created and managed exclusively by hermes (see the s6-setuidgid mkdir
     # -p block below for the canonical list).
-    for sub in cron sessions logs hooks memories skills skins plans workspace home profiles pairing platforms/pairing lazy-packages; do
+    for sub in cron sessions logs hooks memories skills skins plans workspace home profiles pairing platforms/pairing; do
         if [ -e "$HERMES_HOME/$sub" ] && tree_has_non_hermes_owner "$HERMES_HOME/$sub"; then
             chown_hermes_tree "$HERMES_HOME/$sub"
         fi
@@ -262,16 +262,8 @@ fi
 # non-writable prevents an agent session from self-modifying the installed
 # source, venv, TUI bundle, or node_modules and bricking the gateway.
 #
-# Lazy-installable optional backends (Firecrawl, Exa, Feishu, etc.) cannot
-# install into the sealed venv, so they are redirected to the writable
-# $HERMES_HOME/lazy-packages dir on the data volume (Dockerfile sets
-# HERMES_LAZY_INSTALL_TARGET). That dir is appended to the END of sys.path,
-# so a package installed there can only ADD modules — it can never shadow or
-# break a core module, which is what keeps the sealed-venv guarantee intact
-# even though installs are re-enabled. The dir is seeded + chowned to hermes
-# in the mkdir/chown blocks above so first-use installs succeed as the
-# unprivileged runtime user, and it persists across container recreates /
-# image updates (an ABI stamp wipes it if a rebuild bumps the interpreter).
+# Lazy installs are fully disabled at runtime (HERMES_DISABLE_LAZY_INSTALLS=1,
+# see the Dockerfile), so no writable lazy-install target is provisioned here.
 
 # Always reset ownership of $HERMES_HOME/profiles to hermes on every
 # boot. Profile dirs and files can land owned by root when commands
@@ -392,8 +384,7 @@ as_hermes mkdir -p \
     "$HERMES_HOME/workspace" \
     "$HERMES_HOME/home" \
     "$HERMES_HOME/pairing" \
-    "$HERMES_HOME/platforms/pairing" \
-    "$HERMES_HOME/lazy-packages"
+    "$HERMES_HOME/platforms/pairing"
 
 # --- Install-method stamp ---
 # The 'docker' stamp is baked into the immutable install tree at
