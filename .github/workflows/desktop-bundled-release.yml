@@ -364,6 +364,16 @@ jobs:
             node scripts/build-bundled-desktop.mjs --tag="$HERMES_PAYLOAD_TAG" --variant=store
           fi
 
+      # Smoke the bundled payload on its native linux runner before it is
+      # packed into the desktop artifact: the staged interpreter boots
+      # hermes_cli out of the payload with no network and no PYTHONPATH.
+      # This is the ONE linux build+smoke place — pm-bundle.yml no longer
+      # stages or uploads a duplicate linux payload.
+      - name: Smoke test the payload
+        if: startsWith(matrix.target.label, 'linux-')
+        shell: bash
+        run: bash scripts/smoke-payload.sh apps/desktop/build/agent-payload
+
       - name: Audit bundle architecture
         shell: bash
         run: |
