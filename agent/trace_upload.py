@@ -280,8 +280,8 @@ def _do_upload(
         import pm
         pm.ensure_import("trace-upload")
     except Exception:
-        # lazy-install unavailable/declined — fall through to the import,
-        # which surfaces the install hint below if the package is missing.
+        # lazy-install unavailable — fall through to the import, which
+        # surfaces the install hint below if the package is missing.
         pass
     try:
         from huggingface_hub import HfApi
