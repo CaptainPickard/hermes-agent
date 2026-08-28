@@ -6,15 +6,11 @@
  * snapshot, the tool store (with facts.json), and a relocatable venv
  * built on the staged python-build-standalone interpreter.
  *
- * Electron's whole job here is finding the interpreter and re-pointing
- * the venv at the machine's install location once. Everything else —
- * managed tool PATHs, env composition — happens in-process via pm when
- * the backend runs.
- *
- * The one first-boot step that CANNOT live in python: pyvenv.cfg `home`
- * is an absolute path baked on the build runner, and the venv's python
- * cannot boot at all until it points at the shipped base interpreter.
- * adoptPayloadVenv() rewrites it from the payload's own facts.json.
+ * Electron's whole job here is finding the interpreter and verifying the
+ * payload can boot. Bundled builds run the store python directly —
+ * self-relative, no pyvenv.cfg write, so read-only installs (MSIX) work.
+ * Everything else — managed tool PATHs, env composition — happens
+ * in-process via pm when the backend runs.
  */
 
 import { createHash } from 'node:crypto'

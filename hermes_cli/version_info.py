@@ -112,9 +112,8 @@ def _stamp_version_info() -> VersionInfo | None:
     if not isinstance(data, dict) or "commit" not in data:
         return None
 
-    # updateMechanism is required in every stamp — same guard as
-    # installation.tree.read_build_info(). A stamp without it means the
-    # writing build lane must be fixed, not tolerated.
+    # updateMechanism is required in every stamp. A stamp without it means
+    # the writing build lane must be fixed, not tolerated.
     if data.get("updateMechanism") not in ("self", "electron-updater", "external"):
         raise RuntimeError(
             f"install-stamp.json at {stamp_file} is missing a valid "
@@ -123,8 +122,7 @@ def _stamp_version_info() -> VersionInfo | None:
             "scripts/write_install_stamp.py (or bake the field directly)."
         )
     # A light artifact ships no Python runtime. Reading a light stamp from
-    # a Python process means the artifact was mispackaged — same guard as
-    # installation.tree.read_build_info().
+    # a Python process means the artifact was mispackaged.
     if data.get("payload") == "light":
         raise RuntimeError(
             f"install-stamp.json at {stamp_file} marks this artifact as 'light' "

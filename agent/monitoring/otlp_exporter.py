@@ -50,8 +50,8 @@ def _require_sdk(*, auto_install: bool = True):
         except ImportError:
             pass  # pm unavailable — fall through to the import attempt
         except Exception:
-            # FeatureUnavailable (lazy installs disabled / declined / failed) —
-            # fall through; the import below raises OTLPUnavailable with the hint.
+            # Any lazy-install failure — fall through; the import below
+            # raises OTLPUnavailable with the hint.
             pass
     try:
         from opentelemetry.sdk.trace import TracerProvider

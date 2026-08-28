@@ -4833,9 +4833,10 @@ function createActiveBackend(backendArgs) {
 function resolveHermesBackend(backendArgs) {
   // 0. Shipped payload — a bundled install carries the whole runtime under
   //    resources/agent-payload (staged by `hermes pm bundle`). The venv's
-  //    interpreter self-locates once adoptPayloadVenv() has pointed it at
-  //    the shipped base python; HERMES_RUNTIME_DIR aims pm at the payload
-  //    store. Nothing installs on the user machine.
+  //    interpreter self-locates: adoptPayloadVenv() verifies the store
+  //    python + site-packages resolve (no pyvenv.cfg write — read-only
+  //    MSIX-safe), and HERMES_RUNTIME_DIR aims pm at the payload store.
+  //    Nothing installs on the user machine.
   const payload = resolvePayload(process.resourcesPath, {
     fileExists,
     directoryExists,
