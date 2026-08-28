@@ -208,6 +208,13 @@ export const zh: Translations = {
     dismiss: '忽略'
   },
 
+  externalOpenFailed: {
+    title: '无法打开此链接',
+    message: '没有注册可打开此地址的浏览器。请复制链接并手动打开。',
+    copyUrl: '复制链接',
+    close: '关闭'
+  },
+
   sendDiagnostics: {
     title: '向 Nous 发送诊断信息',
     privacyNotice:

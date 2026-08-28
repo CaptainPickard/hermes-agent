@@ -214,6 +214,13 @@ export const en: Translations = {
     dismiss: 'Dismiss'
   },
 
+  externalOpenFailed: {
+    title: "Couldn't open this link",
+    message: 'No web browser is registered to open this address. Copy it and open it manually.',
+    copyUrl: 'Copy URL',
+    close: 'Close'
+  },
+
   sendDiagnostics: {
     title: 'Send diagnostics to Nous',
     privacyNotice:

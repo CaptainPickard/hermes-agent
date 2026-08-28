@@ -253,6 +253,13 @@ export interface Translations {
     dismiss: string
   }
 
+  externalOpenFailed: {
+    title: string
+    message: string
+    copyUrl: string
+    close: string
+  }
+
   sendDiagnostics: {
     title: string
     privacyNotice: string

@@ -168,6 +168,7 @@ import {
 import { describeDevCdpDecision, resolveDevCdpPort } from './dev-cdp'
 import { installEmbedReferer } from './embed-referer'
 import { createEventDeduper } from './event-dedupe'
+import { openExternalUrl as externalOpen, type ExternalOpenDeps } from './external-open'
 import {
   buildTerminalScript,
   resolveTerminalLaunch,
@@ -1665,114 +1666,65 @@ function loadWindowUrl(win, url, label) {
   win.loadURL(url).catch(error => rememberLog(`${label} failed to load: ${describeCrashReason(error)}`))
 }
 
-function openExternalUrl(rawUrl) {
-  const raw = String(rawUrl || '').trim()
-
-  if (!raw) {
-    return false
-  }
-
-  let parsed
-
-  try {
-    parsed = new URL(raw)
-  } catch {
-    return false
-  }
-
-  // `file://` URLs come from the artifacts panel (the renderer can't open
-  // them itself because Chromium blocks file:// navigation from the app
-  // origin). Hand them to `shell.openPath`, which dispatches to the OS
-  // file association. If the OS can't open it (`error` is a non-empty
-  // string), fall back to revealing the file in the system file manager.
-  if (parsed.protocol === 'file:') {
-    let localPath
-
-    try {
-      localPath = resolveRequestedPathForIpc(parsed.toString(), { purpose: 'Open external file' })
-    } catch {
-      return false
-    }
-
-    void shell
-      .openPath(localPath)
-      .then(error => {
-        if (!error) {
-          return
-        }
-
-        rememberLog(`[file] openPath failed: ${error}; revealing in folder instead`)
-
-        try {
-          shell.showItemInFolder(localPath)
-        } catch (revealError) {
-          rememberLog(`[file] showItemInFolder failed: ${revealError.message}`)
-        }
-      })
-      .catch(error => rememberLog(`[file] openPath rejected: ${error.message}`))
-
-    return true
-  }
-
-  if (!['http:', 'https:', 'mailto:'].includes(parsed.protocol)) {
-    return false
-  }
-
-  const url = parsed.toString()
-
-  if (IS_WSL) {
-    rememberLog(`[link] opening via WSL→Windows: ${url}`)
-
-    const proc = spawn('cmd.exe', ['/c', 'start', '""', url], {
-      detached: true,
-      stdio: 'ignore',
-      windowsHide: true
-    })
-
-    proc.on('error', error => {
-      rememberLog(`[link] cmd.exe start failed: ${error.message}; falling back to xdg-open`)
-      shell.openExternal(url).catch(fallback => rememberLog(`[link] xdg-open failed: ${fallback.message}`))
-    })
-    proc.unref()
-
-    return true
-  }
-
-  shell.openExternal(url).catch(error => rememberLog(`[link] openExternal failed: ${error.message}`))
-
-  return true
+const EXTERNAL_OPEN_DEPS: ExternalOpenDeps = {
+  isWsl: IS_WSL,
+  spawn: (cmd, args, opts) => spawn(cmd, args, opts),
+  openExternal: url => shell.openExternal(url),
+  openFile: openExternalFile,
+  notifyFailure: broadcastOpenFailed,
+  log: rememberLog
 }
 
-async function openPreviewInBrowser(rawUrl) {
-  const raw = String(rawUrl || '').trim()
+// The single route every external URL open funnels through (external-open.ts).
+// main.ts only binds the electron deps; all open/fallback logic lives in the
+// module so it unit-tests without loading electron.
+function openExternalUrl(rawUrl: string) {
+  return externalOpen(String(rawUrl || '').trim(), EXTERNAL_OPEN_DEPS)
+}
 
-  if (!raw) {
-    return false
-  }
+async function openPreviewInBrowser(rawUrl: string) {
+  const result = await externalOpen(String(rawUrl || '').trim(), EXTERNAL_OPEN_DEPS)
 
-  let parsed
+  // Only an invalid/unsupported URL is a hard "no" for the caller; an open
+  // failure already raised the fallback modal with the URL.
+  return !(result.ok === false && result.reason === 'invalid')
+}
+
+// `file://` URLs come from the artifacts panel (the renderer can't open them
+// itself because Chromium blocks that navigation). Dispatch to the OS file
+// association; if that fails, reveal the file in the system file manager.
+async function openExternalFile(rawUrl: string) {
+  let localPath: string
 
   try {
-    parsed = new URL(raw)
+    localPath = resolveRequestedPathForIpc(rawUrl, { purpose: 'Open external file' })
   } catch {
-    return false
+    return
   }
 
-  if (parsed.protocol === 'file:') {
-    let localPath
+  try {
+    const error = await shell.openPath(localPath)
 
-    try {
-      localPath = resolveRequestedPathForIpc(parsed.toString(), { purpose: 'Open preview in browser' })
-    } catch {
-      return false
+    if (!error) {
+      return
     }
 
-    await shell.openExternal(pathToFileURL(localPath).toString())
-
-    return true
+    rememberLog(`[file] openPath failed: ${error}; revealing in folder instead`)
+    shell.showItemInFolder(localPath)
+  } catch (error) {
+    rememberLog(`[file] openPath rejected: ${error instanceof Error ? error.message : String(error)}`)
   }
+}
 
-  return openExternalUrl(raw)
+// An open failure is surfaced to the renderer as a modal carrying the URL, so
+// a dead system-browser click (e.g. no https handler registered on Linux) is
+// never silent. Broadcast to every window — the trigger has no single sender.
+function broadcastOpenFailed(url: string, message: string) {
+  rememberLog(`[open-failed] ${url}: ${message}`)
+
+  for (const win of BrowserWindow.getAllWindows()) {
+    win.webContents.send('hermes:external-open-failed', { url, message })
+  }
 }
 
 function ensureWslWindowsFonts() {
@@ -3991,6 +3943,7 @@ async function handOffWindowsBootstrapRecovery(reason) {
   // this call; this is the belt-and-suspenders check.)
   if (isBundledInstall(process.resourcesPath, { fileExists })) {
     rememberLog('[bootstrap] refusing updater recovery hand-off on a bundled install; reinstall the app')
+
     return false
   }
 
@@ -12857,7 +12810,7 @@ function wireCommonWindowHandlers(win, { zoom = true }: { zoom?: boolean } = {})
 
   installContextMenuBridge(win)
   win.webContents.setWindowOpenHandler(details => {
-    openExternalUrl(details.url)
+    void openExternalUrl(details.url)
 
     return { action: 'deny' }
   })
@@ -12867,7 +12820,7 @@ function wireCommonWindowHandlers(win, { zoom = true }: { zoom?: boolean } = {})
     }
 
     event.preventDefault()
-    openExternalUrl(url)
+    void openExternalUrl(url)
   })
 }
 
@@ -15473,7 +15426,21 @@ ipcMain.handle('hermes:connection-config:oauth-login', async (_event, rawUrl) =>
   if (strategy === 'native') {
     try {
       const tokens = await runNativeLogin(baseUrl, {
-        openExternal: url => shell.openExternal(url),
+        // Route the browser-open through the single external-open path so it
+        // gets the WSL handling and the open-failure modal. Fail fast (throw)
+        // so runNativeLogin reports the real reason instead of waiting out the
+        // loopback timeout.
+        openExternal: async url => {
+          const result = await openExternalUrl(url)
+
+          if (result.ok === false) {
+            throw new Error(
+              result.reason === 'failed' && result.message
+                ? result.message
+                : 'Could not open the system browser for native sign-in'
+            )
+          }
+        },
         postJson: (url, body, opts) => postJsonNoAuth(url, body, opts),
         rememberLog
       })
@@ -16839,8 +16806,10 @@ ipcMain.on('hermes:devtools:disable-f12', (_event, on) => {
   }
 })
 
-ipcMain.handle('hermes:openExternal', (_event, url) => {
-  if (!openExternalUrl(url)) {
+ipcMain.handle('hermes:openExternal', async (_event, url) => {
+  const result = await openExternalUrl(url)
+
+  if (result.ok === false && result.reason === 'invalid') {
     throw new Error('Invalid external URL')
   }
 })
@@ -17487,6 +17456,7 @@ function handleDeepLink(url) {
   // undo the summon).
   if (kind === 'copilot-key' && name !== 'start') {
     rememberLog(`[deeplink] ignoring copilot-key path: ${name}`)
+
     return
   }
 

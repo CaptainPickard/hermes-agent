@@ -208,6 +208,13 @@ export const zhHant = defineLocale({
     dismiss: '忽略'
   },
 
+  externalOpenFailed: {
+    title: '無法開啟此連結',
+    message: '沒有註冊可開啟此位址的瀏覽器。請複製連結並手動開啟。',
+    copyUrl: '複製連結',
+    close: '關閉'
+  },
+
   sendDiagnostics: {
     title: '向 Nous 傳送診斷資訊',
     privacyNotice:

@@ -215,6 +215,13 @@ export const ja = defineLocale({
     dismiss: '閉じる'
   },
 
+  externalOpenFailed: {
+    title: 'このリンクを開けませんでした',
+    message: 'このアドレスを開くブラウザが登録されていません。リンクをコピーして手動で開いてください。',
+    copyUrl: 'リンクをコピー',
+    close: '閉じる'
+  },
+
   sendDiagnostics: {
     title: 'Nous に診断情報を送信',
     privacyNotice:

@@ -297,6 +297,7 @@ declare global {
       setDisableF12?: (blocked: boolean) => void
       setPreviewShortcutActive?: (active: boolean) => void
       openExternal: (url: string) => Promise<void>
+      onExternalOpenFailed?: (callback: (payload: ExternalOpenFailedPayload) => void) => () => void
       openPreviewInBrowser?: (url: string) => Promise<void>
       fetchLinkTitle: (url: string) => Promise<string>
       /** A site's icon as a data URL, or '' when it has none we can read.
@@ -1055,10 +1056,16 @@ export interface DesktopConnectionProbeResult {
   error: string | null
 }
 
+export interface ExternalOpenFailedPayload {
+  url: string
+  message?: string
+}
+
 export interface DesktopOauthLoginResult {
   ok: boolean
   baseUrl: string
   connected: boolean
+  error?: string
 }
 
 export interface DesktopOauthLogoutResult {
