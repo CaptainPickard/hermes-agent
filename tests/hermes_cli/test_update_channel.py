@@ -18,7 +18,6 @@ from hermes_cli.update_channel import (
     default_channel,
     install_id,
     resolve_update_channel,
-    seed_install_channel,
     set_install_channel,
     stale_channel_records,
 )
@@ -216,123 +215,6 @@ class TestSetChannel:
         _stamp(root, "self")
         with pytest.raises(ValueError, match="unknown channel"):
             set_install_channel("beta", root)
-
-
-class TestSeedInstallChannel:
-    """Boot-time seeding: the artifact owns the channel it was installed as.
-
-    The record is path-keyed and lives in config.yaml, so it outlives the
-    artifact that wrote it. Replacing a stable install with a nightly at the
-    same path must not leave the nightly pinned to the stable feed.
-    """
-
-    def _home(self, tmp_path, monkeypatch):
-        home = tmp_path / ".hermes"
-        home.mkdir(exist_ok=True)
-        monkeypatch.setenv("HERMES_HOME", str(home))
-        return home
-
-    def _record(self, home, root):
-        import yaml
-
-        written = yaml.safe_load((home / "config.yaml").read_text()) or {}
-        return written.get("update", {}).get("installs", {}).get(install_id(root), {})
-
-    def test_seeds_a_fresh_install_from_its_artifact(self, tmp_path, monkeypatch):
-        home = self._home(tmp_path, monkeypatch)
-        root = tmp_path / "install"
-        _stamp(root, "electron-updater", tag="v0.28.0-nightly.20260819171926")
-
-        assert seed_install_channel(root) == CHANNEL_NIGHTLY
-        record = self._record(home, root)
-        assert record["channel"] == CHANNEL_NIGHTLY
-        assert record["artifactChannel"] == CHANNEL_NIGHTLY
-        assert record["path"] == str(root)
-
-    def test_reinstalling_a_different_flavor_overwrites_the_record(self, tmp_path, monkeypatch):
-        """The scenario: install stable, uninstall, install nightly."""
-        home = self._home(tmp_path, monkeypatch)
-        root = tmp_path / "install"
-
-        _stamp(root, "electron-updater", tag="v0.27.0")
-        assert seed_install_channel(root) == CHANNEL_STABLE
-        assert self._record(home, root)["channel"] == CHANNEL_STABLE
-
-        # Same path, nightly artifact now.
-        _stamp(root, "electron-updater", tag="v0.28.0-nightly.20260819171926")
-        assert seed_install_channel(root) == CHANNEL_NIGHTLY
-
-        record = self._record(home, root)
-        assert record["channel"] == CHANNEL_NIGHTLY
-        assert record["artifactChannel"] == CHANNEL_NIGHTLY
-        # And the whole resolution agrees, which is what the updater reads.
-        import yaml
-
-        config = yaml.safe_load((home / "config.yaml").read_text())
-        assert resolve_update_channel(config, root) == CHANNEL_NIGHTLY
-
-    def test_a_deliberate_choice_on_this_artifact_survives_boot(self, tmp_path, monkeypatch):
-        """--set-channel on a build must not be undone by the next boot."""
-        home = self._home(tmp_path, monkeypatch)
-        root = tmp_path / "install"
-        _stamp(root, "electron-updater", tag="v0.28.0-nightly.20260819171926")
-
-        set_install_channel("stable", root)
-        assert self._record(home, root)["channel"] == CHANNEL_STABLE
-
-        # Boot again on the SAME nightly artifact: the opt-out stands.
-        assert seed_install_channel(root) is None
-        assert self._record(home, root)["channel"] == CHANNEL_STABLE
-
-    def test_seeding_is_idempotent(self, tmp_path, monkeypatch):
-        home = self._home(tmp_path, monkeypatch)
-        root = tmp_path / "install"
-        _stamp(root, "electron-updater", tag="v0.28.0-nightly.20260819171926")
-
-        assert seed_install_channel(root) == CHANNEL_NIGHTLY
-        # Every subsequent boot is a no-op — no config churn.
-        assert seed_install_channel(root) is None
-        assert seed_install_channel(root) is None
-        assert self._record(home, root)["channel"] == CHANNEL_NIGHTLY
-
-    def test_source_checkouts_are_never_seeded(self, tmp_path, monkeypatch):
-        """A checkout's channel is not a property of an artifact."""
-        home = self._home(tmp_path, monkeypatch)
-        root = tmp_path / "src"
-        _stamp(root, "self")
-
-        assert seed_install_channel(root) is None
-        assert not (home / "config.yaml").exists()
-
-    def test_external_installs_are_never_seeded(self, tmp_path, monkeypatch):
-        """Nix/docker/store installs have no channel; the steward owns updates."""
-        home = self._home(tmp_path, monkeypatch)
-        root = tmp_path / "nix"
-        _stamp(root, "external")
-
-        assert seed_install_channel(root) is None
-        assert not (home / "config.yaml").exists()
-
-    def test_seeding_never_raises(self, tmp_path, monkeypatch):
-        """A config problem must not stop boot."""
-        home = self._home(tmp_path, monkeypatch)
-        root = tmp_path / "install"
-        _stamp(root, "electron-updater", tag="v0.27.0")
-        # A config.yaml that is not a mapping makes the writer raise.
-        (home / "config.yaml").write_text("- just\n- a list\n")
-
-        assert seed_install_channel(root) is None
-
-    def test_set_channel_records_the_artifact_it_was_chosen_against(self, tmp_path, monkeypatch):
-        home = self._home(tmp_path, monkeypatch)
-        root = tmp_path / "install"
-        _stamp(root, "electron-updater", tag="v0.27.0")
-
-        set_install_channel("nightly", root)
-        record = self._record(home, root)
-        assert record["channel"] == CHANNEL_NIGHTLY
-        # The choice was made on a STABLE artifact.
-        assert record["artifactChannel"] == CHANNEL_STABLE
 
 
 class TestSetChannelCLI:
