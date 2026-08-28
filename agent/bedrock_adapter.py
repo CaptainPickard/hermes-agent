@@ -46,8 +46,8 @@ logger = logging.getLogger(__name__)
 # EKS deployment without baking boto3 into the base image.
 # ---------------------------------------------------------------------------
 try:
-    from pm import ensure_import as ensure
-    ensure("bedrock")
+    from pm import ensure_import
+    ensure_import("bedrock")
 except Exception:
     pass  # pm unavailable or install failed — let downstream imports surface the real error
 

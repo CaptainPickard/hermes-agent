@@ -28,8 +28,8 @@ from agent.secret_scope import get_secret as _get_secret, is_multiplex_active
 # handles on-demand installation so the Vertex provider still works for users
 # who installed plain `hermes-agent` and only later selected a Gemini model.
 try:
-    from pm import ensure_import as _lazy_ensure
-    _lazy_ensure("vertex")
+    from pm import ensure_import as _ensure_import
+    _ensure_import("vertex")
 except Exception:
     pass  # pm unavailable or install failed — fall through to the real ImportError below
 

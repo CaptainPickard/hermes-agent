@@ -58,12 +58,13 @@ def _get_anthropic_sdk():
     global _anthropic_sdk
     if _anthropic_sdk is ...:
         try:
-            from pm import ensure_import as _lazy_ensure
-            _lazy_ensure("anthropic")
+            from pm import ensure_import as _ensure_import
+            _ensure_import("anthropic")
         except ImportError:
             pass
         except Exception:
-            # FeatureUnavailable — fall through to ImportError handling below
+            # InstallError (lazy install disabled/declined/failed) — fall
+            # through to ImportError handling below
             pass
         try:
             import anthropic as _sdk
