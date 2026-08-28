@@ -129,20 +129,11 @@ def cmd_doctor(args) -> int:
             bad += 0 if soft else 1
             continue
         entry = store.entry(facts.get(name)["entry"])
-        if not package.verify(entry, target):
-            print(f"✗ {name}: installed but failed verification")
+        reason = package.verify(entry, target)
+        if reason:
+            print(f"✗ {name}: installed but failed verification: {reason}")
             bad += 1
             continue
-        binary = package.binary(entry, target)
-        if binary is not None and binary.is_file():
-            from pm.package import machine_matches_binary
-
-            # x64 binary under Windows ARM64 emulation is fine when the
-            # package declares the target emulated.
-            if machine_matches_binary(binary, target) is False and target not in package.emulated_arch_targets:
-                print(f"✗ {name}: {binary.name} is not a {target} binary")
-                bad += 1
-                continue
         print(f"✓ {name} {facts.get(name)['version']}")
     return 1 if bad else 0
 

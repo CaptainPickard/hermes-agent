@@ -10,7 +10,14 @@ import subprocess
 from pathlib import Path
 from typing import Optional
 
-from pm.package import InstallError, Package, StatePackage
+from pm.package import (
+    InstallError,
+    Package,
+    StatePackage,
+    _entry_listing,
+    _missing_reason,
+    _probe_reason,
+)
 from pm.registry import register
 from pm.store import ALL_TARGETS, Store, flatten_single_dir, merge_tree
 
@@ -39,6 +46,9 @@ class BinaryPackage(Package):
     binary_rel: dict[str, str] = {}
     flatten = True
     probe_version = True
+    # Run the probe with cwd=binary.parent: dlopen'd backends (llama.cpp's
+    # cudart) resolve their shared libraries from the working directory.
+    probe_cwd = False
 
     def _rel(self, target: str) -> Optional[str]:
         win = target.startswith("win32")
@@ -54,22 +64,33 @@ class BinaryPackage(Package):
         rel = self._rel(target)
         return entry / rel if rel else None
 
-    def verify(self, entry: Path, target: str) -> bool:
+    def verify(self, entry: Path, target: str) -> str:
+        """Return '' when the entry is usable on target, else why not:
+        a missing binary, a wrong-arch binary, or a --version probe that
+        fails to exec, times out, or exits nonzero."""
         binary = self.binary(entry, target)
-        if binary is None or not binary.is_file():
-            return False
+        if binary is None:
+            return "no binary_rel for this target"
+        reason = self._binary_reason(binary, entry, target)
+        if reason:
+            return reason
         if not self.probe_version:
-            return True
+            return ""
         try:
             proc = subprocess.run(
                 [str(binary), "--version"],
                 capture_output=True,
                 timeout=60,
+                cwd=str(binary.parent) if self.probe_cwd else None,
                 env=self._probe_env(),
             )
-            return proc.returncode == 0
-        except OSError:
-            return False
+        except OSError as e:
+            return f"could not exec {binary} --version: {e}"
+        except subprocess.TimeoutExpired:
+            return f"{binary} --version timed out after 60s"
+        if proc.returncode != 0:
+            return _probe_reason(binary, proc)
+        return ""
 
     def _probe_env(self) -> dict:
         """Deps' env composed in: npm's shim is `#!/usr/bin/env node` and
@@ -577,8 +598,11 @@ class PlaywrightBrowser(Package):
     def stage(self, store: Store, staged: Path, version: str, target: str) -> None:
         (staged / "INSTALLATION_COMPLETE").write_text("", encoding="utf-8")
 
-    def verify(self, entry: Path, target: str) -> bool:
-        return (entry / "INSTALLATION_COMPLETE").is_file()
+    def verify(self, entry: Path, target: str) -> str:
+        marker = entry / "INSTALLATION_COMPLETE"
+        if marker.is_file():
+            return ""
+        return f"INSTALLATION_COMPLETE missing under {entry}; {_entry_listing(entry)}"
 
     def env(self, entry: Path, target: str) -> dict:
         return {"PLAYWRIGHT_BROWSERS_PATH": str(entry.parent)}
@@ -614,6 +638,10 @@ class LlamaCpp(BinaryPackage):
     on_path = False
     binary_rel = {"win32": "llama-server.exe", "posix": "llama-server"}
     flatten = False
+    # --version is llama-server's liveness proof AND the check that the
+    # backend's shared libraries resolve: a CUDA build with no cudart
+    # beside it fails here rather than at first chat.
+    probe_cwd = True
 
     backend: str = ""
     # Release-asset infix per target, or absent where upstream ships none.
@@ -656,24 +684,6 @@ class LlamaCpp(BinaryPackage):
         if not found:
             raise InstallError(self.name, "archive contains no llama-server")
         merge_tree(found[0].parent, staged)
-
-    def verify(self, entry: Path, target: str) -> bool:
-        """--version is llama-server's liveness proof AND the check that
-        the backend's shared libraries resolve: a CUDA build with no
-        cudart beside it fails to start here rather than at first chat."""
-        binary = self.binary(entry, target)
-        if binary is None or not binary.is_file():
-            return False
-        try:
-            proc = subprocess.run(
-                [str(binary), "--version"],
-                capture_output=True,
-                timeout=60,
-                cwd=str(binary.parent),
-            )
-        except OSError:
-            return False
-        return proc.returncode == 0
 
 
 def _github_release_digests(repo: str, tag: str) -> dict[str, str]:

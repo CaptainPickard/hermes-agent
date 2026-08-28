@@ -739,3 +739,61 @@ def test_drop_unloadable_runtime_files_keeps_other_targets(monkeypatch, tmp_path
     cli._drop_unloadable_runtime_files(store)
 
     assert runtime.is_file()
+
+
+def test_verify_missing_binary_reports_path_and_listing(tmp_path):
+    """A missing binary must say which path is missing and what the
+    entry actually contains — the diagnosis that exposes a bad pin."""
+    entry = tmp_path / "entry"
+    (entry / "bin").mkdir(parents=True)
+    (entry / "doc").write_text("x")
+    reason = FakeTool().verify(entry, current_target())
+    assert "bin/faketool" in reason
+    assert "missing" in reason
+    assert "doc" in reason
+
+
+def test_verify_probe_failure_reports_reason(tmp_path):
+    """A probe that cannot run must say so, not just fail."""
+
+    class ProbingTool(FakeTool):
+        probe_version = True
+
+    entry = tmp_path / "entry"
+    (entry / "bin").mkdir(parents=True)
+    (entry / "bin" / "faketool").write_bytes(b"\x00\x01 not an executable")
+    reason = ProbingTool().verify(entry, current_target())
+    assert "--version" in reason
+
+
+def test_verify_arch_mismatch_reports_target(tmp_path):
+    """A wrong-arch binary is diagnosed before any probe is attempted."""
+    target = current_target()
+    arch = target.rsplit("-", 1)[-1]
+    wrong = 0xAA64 if arch == "x64" else 0x8664
+    entry = tmp_path / "entry"
+    (entry / "bin").mkdir(parents=True)
+    buf = bytearray(b"MZ" + b"\x00" * 0x3E)
+    buf[0x3C:0x40] = (0x40).to_bytes(4, "little")
+    buf += b"PE\x00\x00" + wrong.to_bytes(2, "little") + b"\x00" * 64
+    (entry / "bin" / "faketool").write_bytes(bytes(buf))
+    reason = FakeTool().verify(entry, target)
+    assert reason and "not a" in reason and target in reason
+
+
+def test_install_verify_failure_reports_reason(pm_env):
+    """The CI failure: an entry that installs but fails verification must
+    surface WHY in the InstallError, not a bare status."""
+    lockfile_path, runtime, docroot, base_url = pm_env
+    # Archive whose layout does not match binary_rel (bin/faketool).
+    name, digest = make_tar(docroot, "faketool-2.0.tar.gz", {"nope/x": "y"})
+    _pin(lockfile_path, "faketool", "2.0", digest)
+
+    from pm.ensure import ensure
+
+    with pytest.raises(InstallError) as exc:
+        ensure("faketool", explicit=True)
+    msg = str(exc.value)
+    assert "failed verification" in msg
+    assert "bin/faketool" in msg
+    assert "missing" in msg

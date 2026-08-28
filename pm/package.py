@@ -114,9 +114,22 @@ class Package:
     def binary(self, entry: Path, target: str) -> Optional[Path]:
         return None
 
-    def verify(self, entry: Path, target: str) -> bool:
+    def verify(self, entry: Path, target: str) -> str:
+        """Return '' when the entry is usable on target, else why not.
+        Every subclass check (probe, marker) must keep this shape: '' is
+        the verified answer, anything else is the diagnosis."""
         binary = self.binary(entry, target)
-        return binary is None or binary.is_file()
+        if binary is None:
+            return ""
+        return self._binary_reason(binary, entry, target)
+
+    def _binary_reason(self, binary: Path, entry: Path, target: str) -> str:
+        """'' when the binary is present and arch-plausible on target."""
+        if not binary.is_file():
+            return _missing_reason(binary, entry)
+        if machine_matches_binary(binary, target) is False and target not in self.emulated_arch_targets:
+            return f"{binary.name} is not a {target} binary"
+        return ""
 
     def env(self, entry: Path, target: str) -> dict:
         diff: dict = {}
@@ -171,6 +184,31 @@ def machine_matches_binary(binary: Path, target: str) -> Optional[bool]:
     except OSError:
         return None
     return None
+
+
+def _entry_listing(entry: Path, limit: int = 12) -> str:
+    """Top-level names of a store entry, for verification diagnoses."""
+    if not entry.is_dir():
+        return "store entry does not exist"
+    names = sorted(p.name for p in entry.iterdir())
+    shown = ", ".join(names[:limit])
+    if len(names) > limit:
+        shown += f", … ({len(names)} entries)"
+    return shown
+
+
+def _missing_reason(binary: Path, entry: Path) -> str:
+    """Why a package's expected binary is not where it should be — the
+    diagnosis that tells you whether the pin's layout is wrong."""
+    rel = binary.relative_to(entry).as_posix()
+    return f"{rel} missing under {entry}; {_entry_listing(entry)}"
+
+
+def _probe_reason(binary: Path, proc: "subprocess.CompletedProcess") -> str:
+    """Why a --version probe failed: the exit code plus output tail."""
+    out = (proc.stdout or b"") + (proc.stderr or b"")
+    tail = out.decode(errors="replace").strip()[-300:]
+    return f"{binary} --version exited {proc.returncode}" + (f": {tail}" if tail else "")
 
 
 class Runner:

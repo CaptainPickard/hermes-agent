@@ -121,7 +121,7 @@ def _install(
         if facts.installed(package.name, version, store.root):
             return
         entry = store.entry(entry_name)
-        if store.published(entry_name) and not package.verify(entry, target):
+        if store.published(entry_name) and package.verify(entry, target):
             shutil.rmtree(entry, ignore_errors=True)
         if not store.published(entry_name):
             if not artifacts:
@@ -159,8 +159,9 @@ def _install(
                 except Exception as e:
                     raise InstallError(package.name, f"install failed: {e}") from e
 
-        if not package.verify(entry, target):
-            raise InstallError(package.name, "published entry failed verification")
+        reason = package.verify(entry, target)
+        if reason:
+            raise InstallError(package.name, f"published entry failed verification: {reason}")
 
         previous = (facts.get(package.name) or {}).get("version")
         env = package.env(entry, target)
