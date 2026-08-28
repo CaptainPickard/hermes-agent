@@ -13,6 +13,7 @@ packages' env without installing anything.
 """
 
 from pm.ensure import (
+    activate,
     adopt,
     check,
     enabled_extras,
@@ -37,6 +38,7 @@ __all__ = [
     "run",
     "adopt",
     "check",
+    "activate",
     "sync_venv",
     "available",
     "ensure_import",

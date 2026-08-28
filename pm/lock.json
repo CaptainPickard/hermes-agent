@@ -125,6 +125,35 @@
       },
       "version": "2.97.0"
     },
+    "ffmpeg": {
+      "artifacts": {
+        "darwin-arm64": {
+          "sha256": "8287a1b2229e05eb41859f073e18e6c52c60a778f2f5e6881070fe51b79407fe",
+          "url": "https://ffmpeg.martin-riedl.de/download/macos/arm64/1787073674_9.0.1/ffmpeg.zip"
+        },
+        "darwin-x64": {
+          "sha256": "5bdead62ff504ab9b447cc72b212c4fb481e3f7de5877d427a51bee8136dda40",
+          "url": "https://ffmpeg.martin-riedl.de/download/macos/amd64/1787081194_9.0.1/ffmpeg.zip"
+        },
+        "linux-arm64": {
+          "sha256": "92cff3dec20d996bb5b8a918b156b64301338e7c28046053c82d0935cf7c6eb2",
+          "url": "https://ffmpeg.martin-riedl.de/download/linux/arm64/1787072884_9.0.1/ffmpeg.zip"
+        },
+        "linux-x64": {
+          "sha256": "18bec7d5c2ab3b24d277466b758394e109b0479133b98d155c5540ed3013fa74",
+          "url": "https://ffmpeg.martin-riedl.de/download/linux/amd64/1787074600_9.0.1/ffmpeg.zip"
+        },
+        "win32-arm64": {
+          "sha256": "c50d45440d6376155842b653ecea1b323569b254db29cd7a42b298a924fd162c",
+          "url": "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-08-28-17-08/ffmpeg-n9.0.1-11-ge47273f4d9-winarm64-gpl-9.0.zip"
+        },
+        "win32-x64": {
+          "sha256": "dee63142094f79f6a50cdece65384b7793181eab3b6db2ec907834981bb8ab10",
+          "url": "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-08-28-17-08/ffmpeg-n9.0.1-11-ge47273f4d9-win64-gpl-9.0.zip"
+        }
+      },
+      "version": "9.0.1"
+    },
     "git": {
       "artifacts": {
         "win32-arm64": {

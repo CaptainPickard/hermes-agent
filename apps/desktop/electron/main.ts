@@ -177,7 +177,6 @@ import {
   tuiResumeArgs
 } from './external-terminal'
 import { type FaviconIo, resolveFavicon } from './favicon'
-import { findGitBash as _findGitBash } from './find-git-bash'
 import {
   installFindShortcut,
   installFoundInPageForwarder,
@@ -2549,18 +2548,6 @@ function findSystemPython() {
   return null
 }
 
-// findGitBash — locate bash.exe on Windows. Resolves HERMES_GIT_BASH_PATH
-// first (mirrors tools/environments/local.py:_find_bash), then PortableGit,
-// standard install locations, and finally PATH.
-function findGitBash() {
-  return _findGitBash({
-    isWindows: IS_WINDOWS,
-    env: process.env,
-    fileExists,
-    findOnPath
-  })
-}
-
 function getVenvPython(venvRoot) {
   return path.join(venvRoot, IS_WINDOWS ? path.join('Scripts', 'python.exe') : path.join('bin', 'python'))
 }
@@ -2625,8 +2612,8 @@ function makeDashboardReadyFile() {
 // resolveGitBinary — locate git.exe on Windows. A fresh installer-driven
 // install only has PortableGit under %LOCALAPPDATA%\hermes\git (never on
 // PATH), so a bare spawn('git') ENOENTs and self-update checks fail with
-// "Couldn't check for updates". Mirror findGitBash: PortableGit first, then
-// standard Git-for-Windows locations, then PATH. Cached after first probe.
+// "Couldn't check for updates". PortableGit first, then standard
+// Git-for-Windows locations, then PATH. Cached after first probe.
 let _gitBinaryCache = null
 
 function resolveGitBinary() {
@@ -5194,21 +5181,6 @@ async function ensureRuntime(backend) {
     throw new Error(
       `Hermes install at ${ACTIVE_HERMES_ROOT} is missing or incomplete. ` +
         'Reinstall via the desktop installer or scripts/install.ps1.'
-    )
-  }
-
-  // On Windows, preflight Git Bash. Hermes' terminal tool calls bash.exe
-  // directly (tools/environments/local.py); without it the agent can't run
-  // terminal commands. install.ps1's Stage-Git puts PortableGit at
-  // %LOCALAPPDATA%\hermes\git\, which findGitBash() picks up, so for any
-  // user who completed the bootstrap this is a no-op. For users who got
-  // here via an external `hermes` on PATH, this check still helps.
-  if (IS_WINDOWS && !findGitBash()) {
-    throw new Error(
-      'Git for Windows is required for Hermes on Windows (provides Git Bash, ' +
-        "which the agent's terminal tool uses). Install it from " +
-        'https://git-scm.com/download/win or run `winget install -e --id Git.Git`, ' +
-        'then relaunch Hermes.'
     )
   }
 

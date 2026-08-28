@@ -2192,33 +2192,6 @@ def _tui_need_npm_install(root: Path) -> bool:
     return False
 
 
-def _ensure_tui_node() -> None:
-    """Make sure `node` + `npm` are resolvable for the TUI.
-
-    If either is missing from PATH, install the pm-managed node/npm packages
-    and prepend the store's PATH contribution to ``os.environ["PATH"]`` so
-    shutil.which finds them in this Python process.
-
-    Idempotent no-op when node+npm are already discoverable. Set
-    ``HERMES_SKIP_NODE_BOOTSTRAP=1`` to disable auto-install.
-    """
-    if shutil.which("node") and shutil.which("npm"):
-        return
-    if os.environ.get("HERMES_SKIP_NODE_BOOTSTRAP"):
-        return
-
-    try:
-        import pm
-
-        runner = pm.ensure("npm")
-    except Exception:
-        return
-
-    new_path = runner.env.get("PATH")
-    if new_path:
-        os.environ["PATH"] = new_path
-
-
 def _find_bundled_tui(hermes_cli_dir: Path | None = None) -> Path | None:
     """Find a pre-built TUI entry.js bundled in the wheel."""
     if hermes_cli_dir is None:
@@ -2296,7 +2269,6 @@ def _npm_lifecycle_env(env: dict[str, str] | None = None) -> dict[str, str]:
 
 def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
     """TUI: --dev → tsx src; else node dist (HERMES_TUI_DIR prebuilt or esbuild)."""
-    _ensure_tui_node()
 
     def _node_bin(bin: str) -> str:
         if bin == "node":
@@ -12676,6 +12648,8 @@ def main():
 
     # The startup check: O(1) stamp comparisons, no network, no installs.
     # One loud line when the install is damaged; never blocks the command.
+    # Then provision: prepend the store's tool dirs to PATH so reactive
+    # which('git'|'bash'|'ffmpeg'|...) resolves the bundled binaries.
     try:
         import pm
 
@@ -12686,6 +12660,8 @@ def main():
                 f"⚠ install out of sync ({'; '.join(problems)}) — run `hermes pm install`",
                 file=sys.stderr,
             )
+        else:
+            pm.activate()
     except Exception:
         import logging
 

@@ -394,6 +394,49 @@ class Gh(BinaryPackage):
 
 
 @register
+class Ffmpeg(BinaryPackage):
+    """Static ffmpeg (ships ffprobe too). GPLv3 builds; always bundled.
+    optional=False: ffmpeg is a required runtime tool. Sealed bundles ship
+    it baked into the payload (post_update skips provisioning sealed
+    installs — the artifact is atomic); dev installs get it re-ensured by
+    step_provision_runtimes when the pin bumps. Windows: BtbN/FFmpeg-Builds
+    (dated autobuild tag). Linux + macOS: ffmpeg.martin-riedl.de (uniform
+    ZIP, published sha256)."""
+
+    name = "ffmpeg"
+    optional = False
+    binary_rel = {"win32": "bin/ffmpeg.exe", "posix": "bin/ffmpeg"}
+    flatten = True
+
+    def fetch_url(self, version: str, target: str) -> str:
+        osname, arch = target.split("-")
+        if osname == "win32":
+            # BtbN ships branch builds; the URL is the immutable dated tag.
+            return (
+                "https://github.com/BtbN/FFmpeg-Builds/releases/download/"
+                f"autobuild-{self._btbn_tag}/{self._btbn_asset(target)}"
+            )
+        martin = {
+            ("linux", "x64"): "linux/amd64/1787074600_9.0.1",
+            ("linux", "arm64"): "linux/arm64/1787072884_9.0.1",
+            ("darwin", "x64"): "macos/amd64/1787081194_9.0.1",
+            ("darwin", "arm64"): "macos/arm64/1787073674_9.0.1",
+        }
+        return f"https://ffmpeg.martin-riedl.de/download/{martin[(osname, arch)]}/ffmpeg.zip"
+
+    def _btbn_tag(self) -> str:
+        return "2026-08-28-17-08"
+
+    def _btbn_asset(self, target: str) -> str:
+        arch = "arm64" if target.endswith("arm64") else "64"
+        return (
+            "ffmpeg-n9.0.1-11-ge47273f4d9-"
+            f"win{arch}-gpl-9.0.zip"
+        )
+
+
+
+@register
 class Ripgrep(BinaryPackage):
     name = "ripgrep"
     binary_rel = {"win32": "rg.exe", "posix": "rg"}

@@ -349,6 +349,69 @@ def check() -> list[str]:
     return problems
 
 
+def _store_path_dirs() -> list[str]:
+    """Composed PATH dirs of all installed (non-internal, on_path) store
+    packages, deps-first, deduped. Includes optional packages that are
+    *installed* (facts say so) — an installed git/gh must be on PATH even
+    though it's not in the root closure. Never installs."""
+    import os
+
+    if not paths.facts_path().is_file():
+        return []
+    facts = _facts()
+    store = _store()
+    lockfile = _lockfile()
+    target = current_target()
+    dirs: list[str] = []
+    for name in lockfile.names():
+        try:
+            package = get_package(name)
+        except KeyError:
+            continue
+        if package.internal:
+            continue
+        if not getattr(package, "on_path", True):
+            continue
+        if package.missing_reason(target) is not None:
+            continue
+        if not facts.installed(name, lockfile.version(name), store.root):
+            continue
+        env = facts.env_for(name, store.root)
+        path_dirs = env.get("PATH") or []
+        if isinstance(path_dirs, str):
+            path_dirs = [path_dirs]
+        for directory in path_dirs:
+            if directory and directory not in dirs:
+                dirs.append(str(directory))
+    return dirs
+
+
+def activate() -> None:
+    """Make the installed store usable: prepend its tool dirs to
+    os.environ['PATH'] so reactive `shutil.which('git'|'bash'|'ffmpeg'|...)`
+    resolves the bundled binaries. The gate is `check()` — if the store is
+    broken, refuse to inject (fail fast rather than serving a partial PATH).
+
+    This is the ONE sanctioned global PATH write: PATH is the discovery
+    contract every `which` reads, not a tool-specific env leak. Store-first
+    unconditionally — pinned bundled versions win on dev machines too.
+    """
+    import os
+
+    if check():
+        return  # broken store → do not provision; callers surface `hermes pm install`
+    dirs = _store_path_dirs()
+    if not dirs:
+        return
+    existing = os.environ.get("PATH", "")
+    prefix = os.pathsep.join(dirs)
+    existing_lower = {p.lower() for p in existing.split(os.pathsep) if p}
+    missing = [d for d in dirs if d.lower() not in existing_lower]
+    if missing:
+        os.environ["PATH"] = os.pathsep.join([*missing, existing]) if existing else os.pathsep.join(missing)
+
+
+
 def uv(*, venv=None, realize: bool = True):
     """TRANSITIONAL: (uv path, sanitized env) for call sites that still
     drive uv themselves. Two classes remain: update/repair sites (die with
