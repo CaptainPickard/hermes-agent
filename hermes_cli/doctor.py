@@ -522,26 +522,6 @@ def _pm_tool_path(tool: str) -> "Path | None":
     return binary
 
 
-def _managed_pm_tool(tool: str) -> "tuple[str | None, str]":
-    """Locate a pinned tool the way Hermes locates it, plus a label.
-
-    Hermes runs pinned tools out of the pm store, and nothing puts the
-    store on an interactive shell's PATH — so a PATH-only probe misreports
-    a healthy managed install as "not found", which is the normal case.
-
-    PATH stays as the second rung, because doctor reports what is on the
-    machine and an unmanaged system copy is still worth naming.
-    """
-    try:
-        binary = _pm_tool_path(tool)
-    except Exception:
-        binary = None
-    if binary is not None:
-        return str(binary), "managed"
-    system = _safe_which("rg" if tool == "ripgrep" else tool)
-    return system, "system"
-
-
 def _check_managed_runtimes() -> None:
     """Report the managed runtime tools from the pm store's facts file.
 

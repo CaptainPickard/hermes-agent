@@ -786,15 +786,7 @@ def _find_bash() -> str:
     )
 
 
-def _git_root_from_bash(bash: str) -> str:
-    """Resolve Git's root from either <root>/bin or <root>/usr/bin bash."""
-    bin_dir = ntpath.dirname(ntpath.normpath(bash))
-    if ntpath.basename(bin_dir).lower() != "bin":
-        return ntpath.dirname(bin_dir)
-    parent = ntpath.dirname(bin_dir)
-    if ntpath.basename(parent).lower() == "usr":
-        return ntpath.dirname(parent)
-    return parent
+_git_bash_bin_dirs_cache: "list[str] | None" = None
 
 
 def _git_bash_bin_dirs() -> list[str]:
