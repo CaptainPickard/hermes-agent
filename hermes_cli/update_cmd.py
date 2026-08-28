@@ -2966,11 +2966,14 @@ def _clear_fleet_restart_pending_marker() -> None:
 def _current_checkout_sha() -> str | None:
     """Current on-disk checkout HEAD, or None if it cannot be resolved."""
     try:
-        from hermes_cli.build_info import get_code_identity
+        from hermes_cli.version_info import get_code_identity
 
         sha = (get_code_identity(refresh=True) or {}).get("sha")
         return str(sha) if sha else None
     except Exception:
+        # get_code_identity raises only on a mispackaged stamp (missing
+        # updateMechanism / 'light' payload); a live git checkout is the
+        # correct fallback for dev trees.
         return _capture_head_sha(["git"], _m().PROJECT_ROOT)
 
 

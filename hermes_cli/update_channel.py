@@ -46,15 +46,32 @@ CHANNEL_STABLE = "stable"
 CHANNEL_NIGHTLY = "nightly"
 VALID_CHANNELS = (CHANNEL_MAIN, CHANNEL_STABLE, CHANNEL_NIGHTLY)
 
-# A nightly release tag: v<major>.<minor>.0-nightly.<YYYYMMDDHHMMSS>, or the
-# legacy date-only shape. Mirrors _release_tag in
-# scripts/write_install_stamp.py, which writes the ``tag`` field this reads.
+# A nightly release tag: v<major>.<minor>.<patch>-nightly.<YYYYMMDDHHMMSS>,
+# or the legacy date-only shape. THIS is the single authority for the
+# nightly tag shape — scripts/release.py (produces them) and
+# scripts/write_install_stamp.py (validates the feed key) import it rather
+# than re-typing the rule. Nightlies are current-stable patch+1, so any
+# patch is accepted here.
 _NIGHTLY_TAG_RE = re.compile(r"^v(?:0|[1-9]\d{0,2})\.\d+\.\d+-nightly\.20\d{6}(?:\d{6})?$")
 
 
 def is_nightly_tag(tag: Any) -> bool:
     """True when ``tag`` is a nightly release tag."""
     return isinstance(tag, str) and bool(_NIGHTLY_TAG_RE.match(tag.strip()))
+
+
+def nightly_tag_for_date(version: str, date_utc: str) -> str:
+    """The nightly tag name for a UTC timestamp: next PATCH over ``version``
+    (the newest stable's patch + 1), second-precision UTC suffix —
+    v0.27.5-nightly.20260818103000 when stable is v0.27.4. A nightly
+    outversions every stable at or below its patch and loses to the next
+    stable patch, which is exactly the channel-switch upgrade path
+    (nightly→stable = wait for that patch bump to ship as stable).
+    """
+    parts = version.lstrip("v").split(".")
+    major, minor = int(parts[0]), int(parts[1])
+    patch = int(parts[2]) if len(parts) >= 3 else 0
+    return f"v{major}.{minor}.{patch + 1}-nightly.{date_utc}"
 
 
 def _install_key_sha16(project_root: Path) -> str:
