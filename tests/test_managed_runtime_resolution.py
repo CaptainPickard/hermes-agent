@@ -12,7 +12,7 @@ code has two failure modes:
   keep resolving it across reboots.
 
 The fix per call site is one of ``find_node_executable()``, ``pm.env_for()``,
-``pm.run()``, ``pm.ensure()``, or (transitional)
+``pm.ensure()``, or (transitional)
 ``pm.uv()``. This test is
 the ratchet that stops a new bare lookup from being added back.
 

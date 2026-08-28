@@ -7,8 +7,7 @@ machine-written) says exactly which versions and hashes. The installed-state
 file (facts.json, per install) says what is actually on this machine.
 
 ensure(name) makes the installed state match the lockfile and returns a
-Runner with the composed environment. run(name, argv) is the one way hermes
-code executes a managed tool. env_for(*names) composes already-installed
+Runner with the composed environment. env_for(*names) composes already-installed
 packages' env without installing anything.
 """
 
@@ -21,7 +20,6 @@ from pm.ensure import (
     env_for,
     is_installed,
     lazy_installs_allowed,
-    run,
     sync_venv,
     uv,
 )
@@ -35,7 +33,6 @@ __all__ = [
     "ensure",
     "env_for",
     "is_installed",
-    "run",
     "adopt",
     "check",
     "activate",

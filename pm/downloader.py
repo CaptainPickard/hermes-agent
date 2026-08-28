@@ -35,6 +35,20 @@ _LOOPBACK = ("http://127.0.0.1:", "http://localhost:", "http://[::1]:")
 _CHUNK = 1 << 20  # read/write block, also the minimum range size
 
 
+class _HttpsRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """The https-only gate must hold across redirects, not just the first
+    hop — an https URL could otherwise bounce to http mid-download and
+    carry the payload in the clear."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if not (newurl.startswith("https://") or newurl.startswith(_LOOPBACK)):
+            raise DownloadError(f"refusing redirect to non-https url: {newurl}")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+_OPENER = urllib.request.build_opener(_HttpsRedirectHandler())
+
+
 class DownloadError(RuntimeError):
     """Base class for downloader failures."""
 
@@ -96,6 +110,21 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _existing_dest_ok(source: "Source") -> bool:
+    """A dest already on disk counts as done only when it is a genuine
+    complete download. No pinned hash (model-catalog policy): a present
+    file is accepted — size is the tripwire, same as a fresh fetch. With a
+    pinned sha256 the existing file must match, or it is re-fetched."""
+    if not source.dest.exists():
+        return False
+    if not source.sha256:
+        return True
+    try:
+        return _sha256_file(source.dest) == source.sha256
+    except OSError:
+        return False
+
+
 def _default_partials() -> Path:
     from pm import paths
 
@@ -148,9 +177,13 @@ class Download:
         # Probe every source up front so overall_total is the whole job.
         probed = []  # (source, total, range_supported)
         for source in self.sources:
-            if source.dest.exists():
+            if _existing_dest_ok(source):
                 probed.append((source, source.dest.stat().st_size, True))
                 continue
+            # A pre-existing dest that fails its pinned hash is stale — clear
+            # it so the fetch below replaces it rather than trusting it.
+            if source.dest.exists():
+                source.dest.unlink(missing_ok=True)
             total, supported = self._probe(source.url)
             probed.append((source, total, supported))
         overall_total = sum(t for _, t, _ in probed)
@@ -159,7 +192,7 @@ class Download:
         done_base = 0
         completed: dict = {}
         for source, total, supported in probed:
-            if source.dest.exists():
+            if _existing_dest_ok(source):
                 size = source.dest.stat().st_size
                 completed[source.dest.name] = [(0, size)]
                 done_base += size
@@ -191,7 +224,7 @@ class Download:
         single-stream fallback judges completeness by the body)."""
         req = urllib.request.Request(url, headers={**_UA, "Range": "bytes=0-0"})
         try:
-            with urllib.request.urlopen(req, timeout=60) as r:
+            with _OPENER.open(req, timeout=60) as r:
                 if r.status == 206:
                     content_range = r.headers.get("Content-Range", "")
                     if "/" in content_range:
@@ -257,7 +290,7 @@ class Download:
                 req = urllib.request.Request(
                     source.url,
                     headers={**_UA, "Range": f"bytes={start}-{end - 1}"})
-                with urllib.request.urlopen(req, timeout=120) as r, \
+                with _OPENER.open(req, timeout=120) as r, \
                         open(part, "r+b") as f:
                     f.seek(start)
                     pos = start
@@ -309,7 +342,7 @@ class Download:
         covered: _Ranges = []
         req = urllib.request.Request(source.url, headers=_UA)
         try:
-            with urllib.request.urlopen(req, timeout=120) as r, open(part, "wb") as f:
+            with _OPENER.open(req, timeout=120) as r, open(part, "wb") as f:
                 declared = int(r.headers.get("Content-Length") or 0)
                 pos = 0
                 while True:

@@ -94,8 +94,10 @@ def hash_url(url: str) -> str:
     import hashlib
     import urllib.request
 
+    from pm.downloader import _OPENER
+
     digest = hashlib.sha256()
-    with urllib.request.urlopen(
+    with _OPENER.open(
         urllib.request.Request(url, headers=_UA), timeout=600
     ) as resp:
         for block in iter(lambda: resp.read(1024 * 1024), b""):

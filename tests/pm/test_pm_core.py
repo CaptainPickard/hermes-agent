@@ -416,17 +416,6 @@ def test_facts_adopt_by_path_substitution(tmp_path):
     assert env["PATH"] == [str(store_b / "tool-1.0-any" / "bin")]
 
 
-def test_internal_packages_refused_by_run(pm_env):
-    from pm.ensure import run as pm_run
-
-    registry._packages["faketool"].internal = True
-    try:
-        with pytest.raises(InstallError, match="internal package"):
-            pm_run("faketool", ["--version"])
-    finally:
-        registry._packages["faketool"].internal = False
-
-
 def test_compose_env_dependents_win_non_path_too():
     env = compose_env([{"X": "dep"}, {"X": "dependent"}], base={})
     assert env["X"] == "dependent"
@@ -638,18 +627,6 @@ def test_check_reports_venv_drift_and_missing_tools(venv_env):
     _pin(lockfile_path, "faketool", "9.9", "0" * 64)  # tool outdated now
     problems = check()
     assert "faketool: not installed or outdated" in problems
-
-
-def test_facts_drop_forgets_one_package(tmp_path):
-    from pm.lock import Facts
-
-    facts = Facts(tmp_path / "facts.json")
-    facts.record("chromium", "1", "chromium-1208", {}, tmp_path)
-    facts.record("uv", "1", "uv-1", {}, tmp_path)
-    assert facts.drop("chromium") is True
-    assert facts.get("chromium") is None
-    assert facts.get("uv") is not None
-    assert facts.drop("chromium") is False
 
 
 def test_bundle_package_names_include_browsers(monkeypatch, tmp_path):

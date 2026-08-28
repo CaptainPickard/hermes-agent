@@ -227,25 +227,6 @@ def env_for(*names: str, base_env: Optional[dict] = None) -> dict[str, str]:
     return compose_env(diffs, base=base_env)
 
 
-def run(name: str, cmd: list, **kwargs):
-    """The one way hermes code runs a managed tool. Installs it if missing
-    (lazy packages), composes its env, runs. Internal packages (uv, npm)
-    are pm implementation details and refused here."""
-    package = get_package(name)
-    if package.internal:
-        raise InstallError(
-            name, "internal package", "pm uses this inside install steps only"
-        )
-    runner = ensure(name)
-    binary = None
-    fact = _facts().get(name)
-    if fact is not None:
-        binary = package.binary(_store().entry(fact["entry"]), current_target())
-    if binary is None or not binary.is_file():
-        raise InstallError(name, "installed but its binary is missing")
-    return runner.run([str(binary), *cmd], **kwargs)
-
-
 def sync_venv(extras: Optional[list[str]] = None, *, explicit: bool = False) -> None:
     """Make the venv match uv.lock + the enabled extras. Extras union into
     the installed state (one ledger); no-op when the stamp already matches.
@@ -297,16 +278,28 @@ def adopt() -> bool:
     venv_dir = store.root.parent / "venv"
     cfg = venv_dir / "pyvenv.cfg"
     if python_fact and cfg.is_file():
-        entry = store.root / python_fact["entry"]
-        home = entry if not (entry / "bin").is_dir() else entry / "bin"
-        text = cfg.read_text(encoding="utf-8")
-        fixed = [
-            f"home = {home}" if line.lower().startswith("home =") else line
-            for line in text.splitlines()
-        ]
-        new_text = "\n".join(fixed) + "\n"
-        if new_text != text:
-            cfg.write_text(new_text, encoding="utf-8")
+        try:
+            entry = store.root / python_fact["entry"]
+            home = entry if not (entry / "bin").is_dir() else entry / "bin"
+            text = cfg.read_text(encoding="utf-8")
+            fixed = [
+                f"home = {home}" if line.lower().startswith("home =") else line
+                for line in text.splitlines()
+            ]
+            new_text = "\n".join(fixed) + "\n"
+            if new_text != text:
+                cfg.write_text(new_text, encoding="utf-8")
+        except OSError:
+            # Best-effort: on a read-only payload (sealed MSIX) the write is
+            # impossible, and bundled boots run the store python through the
+            # CLI shim anyway (no pyvenv.cfg needed). Adoption must not fail
+            # the whole boot over it — the marker below still records that
+            # the shipped entries were checked.
+            import logging
+
+            logging.getLogger(__name__).debug(
+                "pm adopt: could not re-point pyvenv.cfg", exc_info=True
+            )
 
     try:
         marker.write_text("", encoding="utf-8")

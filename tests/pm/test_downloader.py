@@ -157,6 +157,46 @@ def test_completed_dest_is_skipped(dl_server, tmp_path):
     assert _Handler.ranges_seen == []  # nothing fetched
 
 
+def test_stale_dest_with_wrong_hash_is_refetched(dl_server, tmp_path):
+    payload = _payload(1 << 20)
+    _Handler.payloads["/s"] = payload
+    dest = tmp_path / "s.bin"
+    dest.write_bytes(_payload(1 << 20, seed=b"wrong"))  # wrong bytes on disk
+    dl = Download([Source(_url(dl_server, "/s"), dest, _sha(payload))],
+                  partials_dir=tmp_path / "partials")
+    dl.run()
+    assert dest.read_bytes() == payload  # stale dest replaced
+    assert _Handler.ranges_seen  # a fetch actually happened
+
+
+def test_completed_dest_without_hash_is_skipped(dl_server, tmp_path):
+    # Model-catalog policy: no pinned hash -> a present file is accepted
+    # (size is the only tripwire), matching fresh-download semantics.
+    payload = _payload(1 << 20)
+    _Handler.payloads["/s"] = payload
+    dest = tmp_path / "s.bin"
+    dest.write_bytes(payload)
+    dl = Download([Source(_url(dl_server, "/s"), dest)],
+                  partials_dir=tmp_path / "partials")
+    dl.run()
+    assert _Handler.ranges_seen == []  # nothing fetched
+
+
+def test_redirect_to_non_https_refused():
+    import urllib.request
+
+    from pm.downloader import _HttpsRedirectHandler
+
+    handler = _HttpsRedirectHandler()
+    req = urllib.request.Request("https://example.com/a")
+    with pytest.raises(DownloadError):
+        handler.redirect_request(req, None, 302, "Found", {},
+                                 "http://example.com/b")
+    # An https redirect resolves through the default handler.
+    assert handler.redirect_request(req, None, 302, "Found", {},
+                                    "https://example.com/b") is not None
+
+
 # ── pause ─────────────────────────────────────────────────────
 
 

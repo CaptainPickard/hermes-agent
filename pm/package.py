@@ -52,7 +52,7 @@ class Package:
     deps: packages installed before this one.
     optional: not part of the root closure; installed on demand.
     internal: a package manager pm uses inside install steps (uv, npm) —
-        refused by pm.run outside pm's own packages.
+        never on PATH and never part of the root closure.
     on_path: contributes PATH dirs.
     url: template with {version} and {target} holes. override fetch_url()
         when a platform needs a completely different url.
