@@ -12,6 +12,14 @@
 // (azureConfigFromEnv) and hands them to app-builder-lib's own
 // WindowsSignAzureManager, so the actual signing path is byte-for-byte the
 // one a plain { type: 'azure' } config would run.
+//
+// The Store-submission variant (artifactName "Store-" prefixed) is the one
+// exception: its manifest Publisher is the Partner Center publisher ID
+// (CN=EE6D86E4-...), which no signable cert subject can match — CA/B CSBR
+// requires the legal entity's validated name and Artifact Signing cannot
+// customize CN — so SignerSign rejects the package with ERROR_BAD_FORMAT
+// (0x8007000B). Partner Center re-signs the package with the Microsoft
+// Store certificate on ingestion, so the Store- msix ships unsigned.
 
 import fs from 'node:fs'
 import { createRequire } from 'node:module'
@@ -25,12 +33,20 @@ const require = createRequire(import.meta.url)
 // case (the envelope signature covers the inner .msix packages).
 const SIGNED_ARTIFACT_EXTENSIONS = ['.msix', '.msixbundle']
 
+// Store-submission artifacts are not ATS-signable (publisher mismatch, see
+// the header) and don't need a signature (Partner Center signs on
+// ingestion). Anything with this basename prefix is left unsigned.
+const STORE_ARTIFACT_PREFIX = 'Store-'
+
 /**
  * Whether `file` is a signing target. Everything except the MSIX package is
  * covered by the package's block-map hashes and must stay untouched —
- * signing it after packaging would break the hash.
+ * signing it after packaging would break the hash. The Store-submission
+ * variant is excluded too: it cannot carry an ATS signature and does not
+ * need one.
  */
 export function shouldSignFile(file) {
+  if (path.basename(file).startsWith(STORE_ARTIFACT_PREFIX)) return false
   const lower = file.toLowerCase()
   return SIGNED_ARTIFACT_EXTENSIONS.some(ext => lower.endsWith(ext))
 }
@@ -106,6 +122,10 @@ function azureManager(packager) {
  * @param {any} packager WinPackager
  */
 export default async function sign(configuration, packager) {
+  if (path.basename(configuration.path).startsWith(STORE_ARTIFACT_PREFIX)) {
+    console.log(`[sign-msix] skip Store- submission package (Partner Center signs on ingestion): ${configuration.path}`)
+    return
+  }
   if (!shouldSignFile(configuration.path)) {
     console.log(`[sign-msix] skip non-MSIX (covered by package block map): ${configuration.path}`)
     return

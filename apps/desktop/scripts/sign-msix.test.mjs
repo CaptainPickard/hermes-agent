@@ -17,6 +17,26 @@ test('shouldSignFile admits only .msix and .msixbundle artifacts', () => {
   assert.equal(shouldSignFile('release/Hermes-0.17.0-win32-arm64.MSIX'), true)
 })
 
+test('shouldSignFile rejects the Store-submission variant (Partner Center re-signs)', () => {
+  // The Store- msix manifest Publisher is the Partner Center publisher ID
+  // (CN=EE6D86E4-...), which no signable cert subject can match — ATS
+  // cannot customize CN and CA/B requires the legal entity name — so
+  // SignerSign would fail 0x8007000B. Partner Center signs on ingestion.
+  assert.equal(
+    shouldSignFile('release/Store-HermesBundled-0.28.0-nightly.20260828211829-win-x64.msix'),
+    false
+  )
+  assert.equal(
+    shouldSignFile('release/Store-HermesBundled-0.28.0-nightly.20260828211829-win-arm64.msixbundle'),
+    false
+  )
+  // The out-of-store artifacts keep the only signature Windows validates.
+  assert.equal(
+    shouldSignFile('release/HermesBundled-0.28.0-nightly.20260828211829-win-x64.msix'),
+    true
+  )
+})
+
 test('shouldSignFile rejects every non-package file the hook is asked to sign', () => {
   // The app exe and any payload binary are covered by the package's block
   // map — signing them is wasted round-trips and would break the hash if
