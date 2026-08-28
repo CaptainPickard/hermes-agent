@@ -5,11 +5,11 @@ name: PM Bundle
 # venv built on the staged python-build-standalone interpreter. Each
 # payload is smoke-tested on its native runner — the staged interpreter
 # boots hermes_cli out of the payload with no network and no PYTHONPATH —
-# then uploaded as an artifact for the desktop packaging job to consume.
+# as a pre-merge check for the pm tooling itself.
 #
 # Staging is native per target (no cross-target wheel tables anywhere):
 # the runner IS the target. pm's arch guard fails the job if any staged
-# binary mismatches, before anything uploads.
+# mismatches, before anything ships.
 
 on:
   workflow_dispatch:
@@ -122,11 +122,3 @@ jobs:
       - name: Smoke test the payload
         shell: bash
         run: bash scripts/smoke-payload.sh build/agent-payload
-
-      - name: Upload payload artifact
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: agent-payload-${{ matrix.target.label }}
-          path: build/agent-payload
-          retention-days: 7
-          compression-level: 1
