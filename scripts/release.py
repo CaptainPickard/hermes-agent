@@ -31,6 +31,13 @@ from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+# Bootstrap the repo root onto sys.path so this script can import the
+# nightly-tag authority from hermes_cli.update_channel (hermes_cli/__init__.py
+# is import-light: only os/sys + version constants).
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from hermes_cli.update_channel import _NIGHTLY_TAG_RE, nightly_tag_for_date  # noqa: E402
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 VERSION_FILE = REPO_ROOT / "hermes_cli" / "__init__.py"
 PYPROJECT_FILE = REPO_ROOT / "pyproject.toml"
@@ -2248,14 +2255,14 @@ def remote_github_repo(remote: str) -> str | None:
 # The legacy CalVer tags (v2026.7.20) must never match as SemVer.
 _SEMVER_TAG_RE = re.compile(r"v(?:0|[1-9]\d{0,2})\.\d+\.\d+$")
 _LEGACY_CALVER_TAG_RE = re.compile(r"v20\d{2}\.\d+\.\d+(?:\.\d+)?$")
-# Nightly prerelease tags: v<major>.<minor>.0-nightly.<YYYYMMDDHHMMSS>.
-# The suffix keeps them out of every stable selector (all of which
-# require the no-suffix SemVer shape above). Second precision so manual
-# fires can publish several nightlies per day; the identifier is pure
-# numeric and fixed-length, so semver prerelease comparison (numeric)
-# and lexical sort both order it chronologically. Readers stay tolerant
-# of the original date-only (8-digit) shape.
-_NIGHTLY_TAG_RE = re.compile(r"v(?:0|[1-9]\d{0,2})\.\d+\.0-nightly\.(20\d{6}(?:\d{6})?)$")
+# Nightly prerelease tags are matched with _NIGHTLY_TAG_RE, imported from
+# hermes_cli.update_channel — the single authority for the nightly tag
+# shape (v<major>.<minor>.<any patch>-nightly.<YYYYMMDDHHMMSS>, plus the
+# legacy date-only form). The suffix keeps them out of every stable
+# selector (all of which require the no-suffix SemVer shape above).
+# Second precision so manual fires can publish several nightlies per day;
+# the identifier is pure numeric and fixed-length, so semver prerelease
+# comparison (numeric) and lexical sort both order it chronologically.
 
 
 def release_tag_for_version(semver: str) -> str:
@@ -2287,19 +2294,6 @@ def get_last_nightly_tag():
         if _NIGHTLY_TAG_RE.fullmatch(tag):
             return tag
     return None
-
-
-def nightly_tag_for_date(stable_tag: "str | None", date_utc: str) -> str:
-    """The nightly tag name for a UTC timestamp: next-MINOR over the
-    newest stable release, patch 0, second-precision suffix —
-    v0.28.0-nightly.20260818103000 when stable is v0.27.x. Nightlies always outversion every stable build of
-    the current line and lose to the NEXT stable minor, which is exactly
-    the electron-updater semver behavior the channel switch relies on
-    (nightly→stable = wait for the next minor)."""
-    version = (stable_tag or "v0.0.0").lstrip("v")
-    parts = version.split(".")
-    major, minor = int(parts[0]), int(parts[1])
-    return f"v{major}.{minor + 1}.0-nightly.{date_utc}"
 
 
 def get_current_version():
@@ -2803,7 +2797,9 @@ def prune_old_nightlies(args) -> None:
         # Compare on the DATE prefix only: the suffix may be 8 (legacy) or
         # 14 (timestamped) digits, and a 14-digit string compared against
         # an 8-digit cutoff would be decided by length, not by day.
-        if m and m.group(1)[:8] < cutoff:
+        # (_NIGHTLY_TAG_RE carries no capture group, so slice the suffix
+        # out of the tag itself.)
+        if m and tag.split("-nightly.", 1)[1][:8] < cutoff:
             doomed.append(tag)
     if not doomed:
         print("✓ No nightlies older than 14 days.")
