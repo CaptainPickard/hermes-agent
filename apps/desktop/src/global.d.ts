@@ -590,6 +590,7 @@ export type RuntimeSource =
   | { type: 'docker'; root: string | null } // sealed tree stewarded by Docker
   | { type: 'nix'; root: string | null } // sealed tree stewarded by Nix
   | { type: 'desktop-app'; root: string | null } // sealed tree stewarded by the desktop bundle
+  | { type: 'desktop-bootstrap'; root: string } // canonical install created by the desktop first-launch bootstrap
   | { type: 'unknown' } // no stamp, no .git — provenance cannot be told
   | { type: 'path'; command: string } // an existing `hermes` CLI found on PATH
   | { type: 'system-python'; command: string } // pip-installed hermes_cli on system Python

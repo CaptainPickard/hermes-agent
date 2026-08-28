@@ -4334,7 +4334,32 @@ function activeRuntimeState() {
   // update`, which moves HEAD legitimately. The marker only attests "a
   // desktop-managed bootstrap ran here at least once"; runtime usability is
   // what decides whether we can actually launch.
-  return classifyActiveRuntime(readBootstrapMarker(), BOOTSTRAP_MARKER_SCHEMA_VERSION, isActiveRuntimeUsable())
+  const state = classifyActiveRuntime(readBootstrapMarker(), BOOTSTRAP_MARKER_SCHEMA_VERSION, isActiveRuntimeUsable())
+
+  // The canonical install stamp (written next to the runtime by the bootstrap)
+  // tells the UI where this runtime came from. Prefer it over the marker so
+  // the Runtime row reflects the actual install provenance.
+  state.canonicalInstallStamp = readCanonicalInstallStamp()
+
+  return state
+}
+
+/** Read the install stamp the bootstrap wrote into the canonical runtime
+ *  root (`ACTIVE_HERMES_ROOT/install-stamp.json`). Returns null when the
+ *  runtime wasn't desktop-bootstrapped (or the file is unreadable). */
+function readCanonicalInstallStamp() {
+  try {
+    const raw = fs.readFileSync(path.join(ACTIVE_HERMES_ROOT, 'install-stamp.json'), 'utf8')
+    const parsed = JSON.parse(raw)
+
+    if (parsed && typeof parsed === 'object' && typeof parsed.source === 'string') {
+      return parsed
+    }
+
+    return null
+  } catch {
+    return null
+  }
 }
 
 function writeBootstrapMarker(payload) {
@@ -4349,6 +4374,36 @@ function writeBootstrapMarker(payload) {
   }
 
   writeFileAtomic(BOOTSTRAP_COMPLETE_MARKER, JSON.stringify(merged, null, 2) + '\n', 'utf8')
+
+  // The canonical runtime this bootstrap created is a desktop-managed install
+  // — write its own install stamp alongside it (the same schema the packagers
+  // produce, so every surface reads provenance the same way). Unlike the
+  // artifact stamp this one records where the install CAME from
+  // (desktop-bootstrap) plus the commit the checkout was pinned to.
+  try {
+    const canonicalStamp = {
+      schemaVersion: 1,
+      commit: payload.pinnedCommit || null,
+      branch: payload.pinnedBranch || null,
+      builtAt: new Date().toISOString(),
+      dirty: false,
+      source: 'desktop-bootstrap',
+      distribution: null,
+      updateMechanism: 'self',
+      baseVersion: null,
+      distance: null,
+      payload: 'bootstrap',
+      tag: null
+    }
+
+    const canonicalStampPath = path.join(ACTIVE_HERMES_ROOT, 'install-stamp.json')
+    writeFileAtomic(canonicalStampPath, JSON.stringify(canonicalStamp, null, 2) + '\n', 'utf8')
+    rememberLog(`[bootstrap] wrote canonical install stamp to ${canonicalStampPath}`)
+  } catch (error) {
+    // The marker is the hard contract; a failed stamp write is log-worthy but
+    // must never fail the bootstrap (the runtime itself is already installed).
+    rememberLog(`[bootstrap] failed to write canonical install stamp: ${error?.message || error}`)
+  }
 
   return merged
 }
@@ -4728,111 +4783,57 @@ function resolveHermesBackend(backendArgs) {
     rememberLog('[bootstrap] repair requested; bypassing the usable active runtime to re-run the installer')
   }
 
-  // 4. Existing `hermes` on PATH -- installed via install.ps1 / install.sh from
-  //    a previous tool-only setup, or pip-installed system-wide. Use it but
-  //    do NOT write a bootstrap marker; the user did this themselves and we
-  //    don't want to take ownership of an install we didn't perform.
-  //    HERMES_DESKTOP_IGNORE_EXISTING=1 forces the bootstrap path for testing.
-  if (process.env.HERMES_DESKTOP_IGNORE_EXISTING !== '1') {
-    let hermesCommand = null
-    const hermesOverride = process.env.HERMES_DESKTOP_HERMES
+  // 4. HERMES_DESKTOP_HERMES — an explicit deployment override (used by the
+  //    Nix wrapper), not a discovered PATH candidate. The pinned backend is
+  //    the only valid runtime there; never fall through to bootstrap for it.
+  const hermesOverride = process.env.HERMES_DESKTOP_HERMES
+  let hermesCommand = null
 
-    if (hermesOverride) {
-      const resolvedOverride = findOnPath(hermesOverride)
+  if (hermesOverride) {
+    const resolvedOverride = findOnPath(hermesOverride)
 
-      if (resolvedOverride) {
-        hermesCommand = resolvedOverride
-      } else if (!isWindowsBinaryPathInWsl(hermesOverride, { isWsl: IS_WSL })) {
-        hermesCommand = hermesOverride
-      } else {
-        rememberLog(`Ignoring Windows Hermes override under WSL: ${hermesOverride}`)
-      }
+    if (resolvedOverride) {
+      hermesCommand = resolvedOverride
+    } else if (!isWindowsBinaryPathInWsl(hermesOverride, { isWsl: IS_WSL })) {
+      hermesCommand = hermesOverride
     } else {
-      hermesCommand = findOnPath('hermes')
+      rememberLog(`Ignoring Windows Hermes override under WSL: ${hermesOverride}`)
     }
 
     if (hermesCommand) {
       if (looksLikeDesktopAppBinary(hermesCommand)) {
         rememberLog(`Ignoring desktop app executable on PATH while resolving Hermes CLI: ${hermesCommand}`)
         hermesCommand = null
-      }
-    }
+      } else {
+        const unwrapped = unwrapWindowsVenvHermesCommand(hermesCommand, backendArgs)
 
-    if (hermesCommand) {
-      const unwrapped = unwrapWindowsVenvHermesCommand(hermesCommand, backendArgs)
-
-      if (unwrapped) {
-        return unwrapped
-      }
-
-      // Smoke-test the candidate before trusting it. A `hermes` shim
-      // left behind by a half-uninstalled pip install (or a venv
-      // entry-point pointing at a deleted interpreter) still resolves
-      // via findOnPath but explodes on spawn -- the user then sees a
-      // dead backend instead of the first-launch installer. The cheap
-      // `--version` probe (see backend-probes.ts) catches that case
-      // and lets the resolver fall through to step 6 / bootstrap.
-      const shellForProbe = isCommandScript(hermesCommand)
-
-      // HERMES_DESKTOP_HERMES is an explicit deployment override (used by
-      // the Nix wrapper), not a discovered PATH candidate. It must not fall
-      // through to the install-script bootstrap if the optional probe times
-      // out under load; the pinned backend is the only valid runtime there.
-      if (shouldTrustHermesOverride(hermesOverride) || verifyHermesCli(hermesCommand, { shell: shellForProbe })) {
-        // `unwrapped` above already answered "is this a Windows venv shim?" —
-        // it was null (not a shim, or its import probe failed). Do NOT re-run
-        // unwrapWindowsVenvHermesCommand here: the second call repeats the
-        // same un-memoized import probe, costing up to another full probe
-        // timeout on the boot path for an answer we already have.
-        return {
-          label: `existing Hermes CLI at ${hermesCommand}`,
-          command: hermesCommand,
-          args: backendArgs,
-          bootstrap: false,
-          env: {},
-          kind: 'command',
-          shell: shellForProbe,
-          local: 'installed'
+        if (unwrapped) {
+          return unwrapped
         }
-      }
 
-      rememberLog(
-        `Ignoring existing Hermes CLI at ${hermesCommand}: --version probe failed; falling through to bootstrap.`
-      )
+        const shellForProbe = isCommandScript(hermesCommand)
+
+        if (shouldTrustHermesOverride(hermesOverride) || verifyHermesCli(hermesCommand, { shell: shellForProbe })) {
+          return {
+            label: `existing Hermes CLI at ${hermesCommand}`,
+            command: hermesCommand,
+            args: backendArgs,
+            bootstrap: false,
+            env: {},
+            kind: 'command',
+            shell: shellForProbe,
+            local: 'installed'
+          }
+        }
+
+        rememberLog(
+          `Ignoring existing Hermes CLI at ${hermesCommand}: --version probe failed; falling through to bootstrap.`
+        )
+      }
     }
   }
 
-  // 5. Last-ditch: pip-installed hermes_cli module via system Python.
-  //    Same rationale as #4 -- the user installed this; we use it but don't
-  //    take ownership.
-  const python = findSystemPython()
-
-  if (python) {
-    // Same smoke-test rationale as step 4: a system Python in the
-    // SUPPORTED_VERSIONS range can be registered (PEP 514) without
-    // having hermes_cli installed -- common on dev boxes that have
-    // a python.org install from prior unrelated work. Returning that
-    // backend hands the spawn step a guaranteed ModuleNotFoundError.
-    // Verify the import works before trusting the candidate; on
-    // failure, fall through to step 6 so the bootstrap runner pulls
-    // a uv-managed 3.11 into %LOCALAPPDATA%\hermes\hermes-agent\venv.
-    if (canImportHermesCli(python)) {
-      return {
-        kind: 'python',
-        label: `installed hermes_cli module via ${python}`,
-        command: python,
-        args: ['-m', 'hermes_cli.main', ...backendArgs],
-        bootstrap: false,
-        env: {},
-        shell: false,
-        local: 'installed'
-      }
-    }
-
-    rememberLog(`Ignoring system Python ${python}: hermes_cli is not importable; falling through to bootstrap.`)
-  }
-
-  // 6. Nothing usable yet -- signal the bootstrap runner that we need to
+  // 5. Nothing usable yet -- signal the bootstrap runner that we need to
   //    clone+install. Phase 1D's bootstrap-runner consumes this sentinel
   //    and drives install.ps1 stages with a progress UI. Until 1D lands,
   //    callers see the sentinel and surface it as a user-facing error
@@ -17137,8 +17138,9 @@ function canonicalizeInstallPath(p: string): string {
 
 /** Classify what this build carries (embedded / light / external). The stamp's
  *  `payload` decides the first two; an external build classifies its root via
- *  the stamp's `source`, so About's Runtime row names git/docker/nix instead
- *  of a bare "external". */
+ *  the canonical-root install stamp (desktop-bootstrapped) or the app stamp's
+ *  `source`, so About's Runtime row names git/docker/nix/desktop-bootstrap
+ *  instead of a bare "external". */
 function resolveHermesRuntime() {
   const stamp = INSTALL_STAMP as InstallStamp | null
 
@@ -17151,6 +17153,12 @@ function resolveHermesRuntime() {
   }
 
   const root = resolveUpdateRoot()
+  const canonicalStamp = activeRuntimeState().canonicalInstallStamp
+
+  if (canonicalStamp?.source === 'desktop-bootstrap') {
+    return { type: 'desktop-bootstrap', root }
+  }
+
   const source = stamp?.source
 
   if (source === 'git') {
