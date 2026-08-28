@@ -226,6 +226,7 @@ import { createHudSnapShortcut } from './hud-snap-shortcut'
 import { buildHudWindowUrl } from './hud-url'
 import { resolveHudWindowing } from './hud-windowing'
 import { INSTALL_STAMP as BAKED_INSTALL_STAMP } from './install-stamp'
+import type { InstallStamp } from './install-stamp'
 import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle } from './link-title-window'
 import { ensureMainWindow } from './main-window-lifecycle'
 import {
@@ -267,7 +268,7 @@ import { loadNativeTokenSet, type NativeTokenStoreIo, persistNativeTokenSet } fr
 import { serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request'
 import { LEGACY_OAUTH_PARTITION, resolveOauthPartition } from './oauth-partition'
 import { createParentStartMarkerResolver, parentWatchdogEnv } from './parent-process-identity'
-import { adoptPayloadVenv, isBundledInstall, resolvePayload } from './payload-backend'
+import { adoptPayloadVenv, installIdForRoot, isBundledInstall, resolvePayload } from './payload-backend'
 import { registerPetOverlayIpc } from './pet-overlay-ipc'
 import {
   buildRegistryProfileRoutes,
@@ -17109,15 +17110,94 @@ ipcMain.handle('hermes:version', async () => {
   const skew = await detectRendererSkew()
 
   return {
-    appVersion: resolveHermesVersion(),
+    ...resolveHermesVersionInfo(),
     electronVersion: process.versions.electron,
     nodeVersion: process.versions.node,
     platform: process.platform,
     hermesRoot: resolveUpdateRoot(),
     bundleOutOfSync: skew.outOfSync,
-    bundleCommitsBehind: skew.desktopCommitsBehind
+    bundleCommitsBehind: skew.desktopCommitsBehind,
+    // The install id: sha16 of the canonical install-root path — the key of
+    // this install's per-install channel record and its installs/<sha16>/ state
+    // folder. Same value `hermes update --install-id` prints; About renders it
+    // as `sha16 (path)`.
+    installId: installIdForRoot(resolveUpdateRoot(), canonicalizeInstallPath),
+    // What this build carries and where an external backend runs from.
+    // Bundled artifacts always run their payload; light artifacts have no
+    // runtime and only reach remote backends. External builds classify from
+    // the install stamp (git/docker/nix), 'unknown' when it can't be told.
+    hermesRuntime: resolveHermesRuntime()
   }
 })
+
+/** Build provenance read from the install stamp — the same facts the CLI
+ *  reports. Falls back to the bare app version when there's no stamp. */
+function resolveHermesVersionInfo() {
+  // The baked build-time constant is typed more narrowly than a full stamp
+  // loaded from disk; cast to the full shape so every provenance field is
+  // readable on either source.
+  const stamp = INSTALL_STAMP as InstallStamp | null
+
+  if (stamp) {
+    return {
+      appVersion: resolveHermesVersion(),
+      baseVersion: stamp.baseVersion ?? undefined,
+      distance: stamp.distance ?? undefined,
+      commit: stamp.commit,
+      branch: stamp.branch,
+      source: stamp.source ?? undefined,
+      distribution: stamp.distribution ?? undefined,
+      dirty: stamp.dirty
+    }
+  }
+
+  return { appVersion: app.getVersion(), baseVersion: app.getVersion() }
+}
+
+// Python's Path.resolve() equivalent for install-id derivation: realpath when
+// the path exists, plain resolve otherwise. Must stay byte-compatible with
+// boot_bootstrap._install_key or the CLI and the app would compute two
+// different ids for one install.
+function canonicalizeInstallPath(p: string): string {
+  try {
+    return fs.realpathSync(p)
+  } catch {
+    return path.resolve(p)
+  }
+}
+
+/** Classify what this build carries (embedded / light / external). The stamp's
+ *  `payload` decides the first two; an external build classifies its root via
+ *  the stamp's `source`, so About's Runtime row names git/docker/nix instead
+ *  of a bare "external". */
+function resolveHermesRuntime() {
+  const stamp = INSTALL_STAMP as InstallStamp | null
+
+  if (stamp?.payload === 'light') {
+    return { type: 'light' }
+  }
+
+  if (stamp?.payload === 'bundled') {
+    return { type: 'embedded' }
+  }
+
+  const root = resolveUpdateRoot()
+  const source = stamp?.source
+
+  if (source === 'git') {
+    return { type: 'git', root }
+  }
+
+  if (source === 'nix') {
+    return { type: 'nix', root: null }
+  }
+
+  if (source === 'docker') {
+    return { type: 'docker', root: null }
+  }
+
+  return { type: 'unknown' }
+}
 
 // ===========================================================================
 // Uninstall — remove the Chat GUI (and optionally the agent / user data).

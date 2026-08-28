@@ -2276,6 +2276,41 @@ export interface Translations {
 
   updates: {
     stages: Record<string, string>
+    appName: string
+    version: (value: string) => string
+    versionUnavailable: string
+    bundleOutOfSync: string
+    bundleOutOfSyncDesc: string
+    bundleOutOfSyncAction: string
+    updatesSection: string
+    checkNow: string
+    checkingShort: string
+    seeWhatsNew: string
+    releaseNotes: string
+    installing: string
+    cantReach: string
+    tapCheck: string
+    updateReady: (count: number) => string
+    updateReadyUnknown: string
+    lastChecked: (age: string) => string
+    justNowSuffix: string
+    never: string
+    justNow: string
+    minAgo: (count: number) => string
+    hoursAgo: (count: number) => string
+    daysAgo: (count: number) => string
+    versionDetailsTitle: string
+    versionDetailsBody: string
+    versionDetailsVersion: string
+    versionDetailsCommit: string
+    versionDetailsBuildOrigin: string
+    versionDetailsDistribution: string
+    versionDetailsDistributionDesktop: string
+    versionDetailsRuntimeEmbedded: string
+    versionDetailsRuntimeExternal: string
+    versionDetailsRuntime: string
+    versionDetailsInstallId: string
+    versionDetailsUncommittedChanges: string
     checking: string
     checkFailedTitle: string
     tryAgain: string
@@ -2290,6 +2325,7 @@ export interface Translations {
     availableTitleBackend: string
     availableBodyBackend: string
     availableBodyNoChangelog: string
+    availableBodyRelease: (tag: string) => string
     updateNow: string
     maybeLater: string
     moreChanges: (count: number) => string
@@ -2550,6 +2586,7 @@ export interface Translations {
       update: string
       updateInProgress: string
       commitsBehind: (count: number, branch: string) => string
+      releaseAvailable: (tag: string) => string
       desktopVersion: (version: string) => string
       backendVersion: (version: string) => string
       clientLabel: (version: string) => string
