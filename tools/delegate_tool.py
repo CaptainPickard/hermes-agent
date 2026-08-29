@@ -3879,6 +3879,31 @@ def delegate_task(
             from tools.delegation_output_schema import append_output_contract
 
             _child_context = append_output_contract(_child_context, _task_schema)
+        # Resolve per-task credentials only when the batch task requests a
+        # model and/or provider override. Tasks with neither field keep the
+        # already-resolved global bundle for backward compatibility.
+        _task_model = t.get("model")
+        _task_provider = t.get("provider")
+        if _task_model or _task_provider:
+            _task_cfg = dict(cfg)
+            if _task_model:
+                _task_cfg["model"] = _task_model
+            if _task_provider:
+                _task_cfg["provider"] = _task_provider
+                if _task_provider != str(cfg.get("provider") or "").strip():
+                    # A different provider must resolve its own runtime
+                    # endpoint, key, and transport rather than inheriting the
+                    # global provider's direct credential settings.
+                    _task_cfg["base_url"] = ""
+                    _task_cfg["api_key"] = ""
+                    _task_cfg["api_mode"] = ""
+            try:
+                _task_creds = _resolve_delegation_credentials(_task_cfg, parent_agent)
+            except ValueError as exc:
+                return tool_error(str(exc))
+        else:
+            _task_creds = creds
+
         try:
             child = _build_child_preserving_parent_tools(
                 task_index=i,
@@ -3887,18 +3912,18 @@ def delegate_task(
                 # Subagents always inherit the parent's toolsets; the model
                 # cannot choose or narrow them (no model-facing toolsets arg).
                 toolsets=None,
-                model=creds["model"],
+                model=_task_creds["model"],
                 max_iterations=effective_max_iter,
                 task_count=n_tasks,
                 parent_agent=parent_agent,
-                override_provider=creds["provider"],
-                override_base_url=creds["base_url"],
-                override_api_key=creds["api_key"],
-                override_api_mode=creds["api_mode"],
-                override_request_overrides=creds.get("request_overrides"),
-                override_max_tokens=creds.get("max_output_tokens"),
-                override_acp_command=creds.get("command"),
-                override_acp_args=creds.get("args"),
+                override_provider=_task_creds["provider"],
+                override_base_url=_task_creds["base_url"],
+                override_api_key=_task_creds["api_key"],
+                override_api_mode=_task_creds["api_mode"],
+                override_request_overrides=_task_creds.get("request_overrides"),
+                override_max_tokens=_task_creds.get("max_output_tokens"),
+                override_acp_command=_task_creds.get("command"),
+                override_acp_args=_task_creds.get("args"),
                 role=effective_role,
             )
         except ValueError as exc:
@@ -4712,7 +4737,9 @@ def _build_top_level_description() -> str:
         "yourself before telling the user the operation succeeded.\n"
         + restrictions_rule +
         "- Children inherit the parent model unless pinned via "
-        "delegation.provider / delegation.model in config.yaml."
+        "delegation.provider / delegation.model in config.yaml. Tasks can "
+        "optionally specify model/provider to run each subagent on a different "
+        "model than the global delegation config."
     )
 
 
@@ -4829,6 +4856,26 @@ DELEGATE_TASK_SCHEMA = {
                                 "schema_valid, plus schema_errors on "
                                 "failure). Keep it forgiving — require only "
                                 "fields you will read."
+                            ),
+                        },
+                        "model": {
+                            "type": "string",
+                            "description": (
+                                "Optional model override for THIS task only. "
+                                "When set, the child runs on this model instead "
+                                "of delegation.model from config.yaml. Must be "
+                                "paired with provider if the model lives on a "
+                                "different provider than the global "
+                                "delegation.provider."
+                            ),
+                        },
+                        "provider": {
+                            "type": "string",
+                            "description": (
+                                "Optional provider override for THIS task only. "
+                                "When set, credentials are resolved via the "
+                                "runtime provider system for this provider. "
+                                "Falls back to delegation.provider when not set."
                             ),
                         },
                     },
