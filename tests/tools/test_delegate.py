@@ -73,6 +73,12 @@ class TestDelegateRequirements(unittest.TestCase):
         self.assertIn("goal", task_props)
         self.assertIn("context", task_props)
         self.assertIn("output_schema", task_props)
+        self.assertIn("model", task_props)
+        self.assertEqual(task_props["model"]["type"], "string")
+        self.assertIn("provider", task_props)
+        self.assertEqual(task_props["provider"]["type"], "string")
+        self.assertNotIn("model", props)
+        self.assertNotIn("provider", props)
         # toolsets is intentionally NOT exposed to the model — subagents always
         # inherit the parent's toolsets. Letting the model name toolsets was a
         # capability-selection surface the model should not control.
@@ -139,6 +145,104 @@ class TestDelegateRequirements(unittest.TestCase):
         # top-level text (only rendered when nesting is available).
         self.assertIn("max_spawn_depth=4", overrides["description"])
         self.assertNotIn("up to 7", overrides["description"])
+
+class TestPerTaskCredentialOverrides(unittest.TestCase):
+    """Per-task model/provider pins apply only to batch task entries."""
+
+    @patch("tools.delegate_tool._load_config")
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    @patch("tools.delegate_tool._build_child_preserving_parent_tools")
+    def test_mixed_batch_resolves_override_and_preserves_global_creds(
+        self, mock_build_child, mock_resolve_creds, mock_load_config
+    ):
+        cfg = {
+            "max_iterations": 12,
+            "model": "global-model",
+            "provider": "openrouter",
+            "base_url": "https://global.example/v1",
+            "api_key": "global-key",
+            "api_mode": "chat_completions",
+        }
+        global_creds = {
+            "model": "global-model",
+            "provider": "openrouter",
+            "base_url": "https://global.example/v1",
+            "api_key": "global-key",
+            "api_mode": "chat_completions",
+            "request_overrides": {"global": True},
+            "max_output_tokens": 1234,
+            "command": None,
+            "args": [],
+        }
+        task_creds = {
+            "model": "glm-5.3",
+            "provider": "ollama-cloud",
+            "base_url": "https://ollama.example/v1",
+            "api_key": "ollama-key",
+            "api_mode": "chat_completions",
+            "request_overrides": {"task": True},
+            "max_output_tokens": 5678,
+            "command": "ollama",
+            "args": ["run"],
+        }
+        mock_load_config.return_value = cfg
+        mock_resolve_creds.side_effect = [global_creds, task_creds]
+        mock_build_child.side_effect = [MagicMock(), MagicMock()]
+        parent = _make_mock_parent()
+
+        with patch("tools.delegate_tool._run_single_child") as mock_run_child:
+            mock_run_child.side_effect = [
+                {
+                    "task_index": 0,
+                    "status": "completed",
+                    "summary": "override complete",
+                    "api_calls": 0,
+                    "duration_seconds": 0,
+                },
+                {
+                    "task_index": 1,
+                    "status": "completed",
+                    "summary": "global complete",
+                    "api_calls": 0,
+                    "duration_seconds": 0,
+                },
+            ]
+            delegate_task(
+                tasks=[
+                    {
+                        "goal": "Investigate the override path",
+                        "model": "glm-5.3",
+                        "provider": "ollama-cloud",
+                    },
+                    {"goal": "Investigate the global fallback"},
+                ],
+                parent_agent=parent,
+            )
+
+        self.assertEqual(mock_resolve_creds.call_count, 2)
+        self.assertEqual(mock_resolve_creds.call_args_list[0].args[0], cfg)
+        override_cfg = mock_resolve_creds.call_args_list[1].args[0]
+        self.assertEqual(override_cfg["model"], "glm-5.3")
+        self.assertEqual(override_cfg["provider"], "ollama-cloud")
+        self.assertEqual(override_cfg["base_url"], "")
+        self.assertEqual(override_cfg["api_key"], "")
+        self.assertEqual(override_cfg["api_mode"], "")
+
+        override_kwargs = mock_build_child.call_args_list[0].kwargs
+        self.assertEqual(override_kwargs["model"], "glm-5.3")
+        self.assertEqual(override_kwargs["override_provider"], "ollama-cloud")
+        self.assertEqual(override_kwargs["override_base_url"], "https://ollama.example/v1")
+        self.assertEqual(override_kwargs["override_api_key"], "ollama-key")
+        self.assertEqual(override_kwargs["override_request_overrides"], {"task": True})
+        self.assertEqual(override_kwargs["override_max_tokens"], 5678)
+        self.assertEqual(override_kwargs["override_acp_command"], "ollama")
+        self.assertEqual(override_kwargs["override_acp_args"], ["run"])
+
+        fallback_kwargs = mock_build_child.call_args_list[1].kwargs
+        self.assertEqual(fallback_kwargs["model"], "global-model")
+        self.assertEqual(fallback_kwargs["override_provider"], "openrouter")
+        self.assertEqual(fallback_kwargs["override_base_url"], "https://global.example/v1")
+
 
 class TestChildSystemPrompt(unittest.TestCase):
     def test_goal_only(self):
