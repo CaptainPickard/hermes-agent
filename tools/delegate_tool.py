@@ -1170,6 +1170,55 @@ def check_delegate_requirements() -> bool:
     return True
 
 
+def _load_profile_identity(profile_name: str) -> Optional[Dict[str, Optional[str]]]:
+    """Load a named Hermes profile's identity files and model config.
+
+    Returns ``None`` when the named profile directory does not exist. All file
+    and config reads are best-effort so a partial or malformed profile still
+    spawns with whichever identity data is available.
+    """
+    from hermes_constants import get_default_hermes_root
+
+    profile_path = get_default_hermes_root() / "profiles" / profile_name
+    if not profile_path.is_dir():
+        return None
+
+    result: Dict[str, Optional[str]] = {
+        "soul": None,
+        "identity": None,
+        "agents": None,
+        "model": None,
+        "provider": None,
+    }
+    for key, filename in (
+        ("soul", "SOUL.md"),
+        ("identity", "IDENTITY.md"),
+        ("agents", "AGENTS.md"),
+    ):
+        try:
+            content = (profile_path / filename).read_text(encoding="utf-8").strip()
+            result[key] = content or None
+        except Exception:
+            pass
+
+    try:
+        import yaml
+
+        config = yaml.safe_load(
+            (profile_path / "config.yaml").read_text(encoding="utf-8")
+        )
+        model_cfg = config.get("model", {}) if isinstance(config, dict) else {}
+        if isinstance(model_cfg, dict):
+            for key, config_key in (("model", "default"), ("provider", "provider")):
+                value = model_cfg.get(config_key)
+                if isinstance(value, str) and value.strip():
+                    result[key] = value
+    except Exception:
+        pass
+
+    return result
+
+
 def _build_child_system_prompt(
     goal: str,
     context: Optional[str] = None,
@@ -1178,6 +1227,7 @@ def _build_child_system_prompt(
     role: str = "leaf",
     max_spawn_depth: int = 2,
     child_depth: int = 1,
+    profile_identity: Optional[Dict[str, Optional[str]]] = None,
 ) -> str:
     """Build a focused system prompt for a child agent.
 
@@ -1187,11 +1237,33 @@ def _build_child_system_prompt(
     The depth note is literal truth (grounded in the passed config) so
     the LLM doesn't confabulate nesting capabilities that don't exist.
     """
-    parts = [
-        "You are a focused subagent working on a specific delegated task.",
-        "",
-        f"YOUR TASK:\n{goal}",
-    ]
+    if profile_identity and (
+        profile_identity.get("soul") or profile_identity.get("identity")
+    ):
+        parts = [
+            value
+            for value in (
+                profile_identity.get("soul"),
+                profile_identity.get("identity"),
+                profile_identity.get("agents"),
+            )
+            if value
+        ]
+        parts.append(f"\nYOUR TASK:\n{goal}")
+    else:
+        if profile_identity:
+            logger.warning(
+                "Profile has no SOUL.md or IDENTITY.md; using generic child identity."
+            )
+        parts = [
+            "You are a focused subagent working on a specific delegated task.",
+            "",
+        ]
+        if profile_identity:
+            agents_content = profile_identity.get("agents")
+            if agents_content:
+                parts.append(agents_content)
+        parts.append(f"YOUR TASK:\n{goal}")
     if context and context.strip():
         parts.append(f"\nCONTEXT:\n{context}")
     if workspace_path and str(workspace_path).strip():
@@ -1622,6 +1694,8 @@ def _build_child_agent(
     # ACP transport overrides from trusted delegation config.
     override_acp_command: Optional[str] = None,
     override_acp_args: Optional[List[str]] = None,
+    # Per-task profile identity files, loaded by delegate_task before child construction.
+    profile_identity: Optional[Dict[str, Optional[str]]] = None,
     # Per-call role controlling whether the child can further delegate.
     # 'leaf' (default) cannot; 'orchestrator' retains the delegation
     # toolset subject to depth/kill-switch bounds applied below.
@@ -1735,6 +1809,7 @@ def _build_child_agent(
         role=effective_role,
         max_spawn_depth=max_spawn,
         child_depth=child_depth,
+        profile_identity=profile_identity,
     )
     # Extract parent's API key so subagents inherit auth (e.g. Nous Portal).
     parent_api_key = getattr(parent_agent, "api_key", None)
@@ -3879,11 +3954,29 @@ def delegate_task(
             from tools.delegation_output_schema import append_output_contract
 
             _child_context = append_output_contract(_child_context, _task_schema)
-        # Resolve per-task credentials only when the batch task requests a
-        # model and/or provider override. Tasks with neither field keep the
-        # already-resolved global bundle for backward compatibility.
+        # Per-task model/provider overrides take precedence over profile config.
+        # A profile fills only missing fields, before credential resolution, so
+        # its provider gets a complete runtime credential bundle rather than
+        # inheriting the global provider's endpoint or API key.
         _task_model = t.get("model")
         _task_provider = t.get("provider")
+        _profile_name = t.get("profile")
+        _profile_identity = None
+        if _profile_name:
+            _profile_identity = _load_profile_identity(_profile_name)
+            if _profile_identity is None:
+                return tool_error(
+                    f"Profile '{_profile_name}' not found. Check that it exists "
+                    f"under the Hermes profiles root as profiles/{_profile_name}/."
+                )
+            if not _task_model:
+                _task_model = _profile_identity.get("model")
+            if not _task_provider:
+                _task_provider = _profile_identity.get("provider")
+
+        # Resolve per-task credentials when either explicit task fields or
+        # profile config selects a model and/or provider. Tasks with neither
+        # keep the already-resolved global bundle for backward compatibility.
         if _task_model or _task_provider:
             _task_cfg = dict(cfg)
             if _task_model:
@@ -3924,6 +4017,7 @@ def delegate_task(
                 override_max_tokens=_task_creds.get("max_output_tokens"),
                 override_acp_command=_task_creds.get("command"),
                 override_acp_args=_task_creds.get("args"),
+                profile_identity=_profile_identity,
                 role=effective_role,
             )
         except ValueError as exc:
@@ -4739,7 +4833,9 @@ def _build_top_level_description() -> str:
         "- Children inherit the parent model unless pinned via "
         "delegation.provider / delegation.model in config.yaml. Tasks can "
         "optionally specify model/provider to run each subagent on a different "
-        "model than the global delegation config."
+        "model than the global delegation config, or a profile to load that "
+        "profile's SOUL.md, IDENTITY.md, AGENTS.md, and model/provider config "
+        "so the child becomes that bot rather than a generic subagent."
     )
 
 
@@ -4876,6 +4972,17 @@ DELEGATE_TASK_SCHEMA = {
                                 "When set, credentials are resolved via the "
                                 "runtime provider system for this provider. "
                                 "Falls back to delegation.provider when not set."
+                            ),
+                        },
+                        "profile": {
+                            "type": "string",
+                            "description": (
+                                "Optional Hermes profile name for THIS task. When set, "
+                                "the child loads that profile's SOUL.md, IDENTITY.md, and "
+                                "AGENTS.md as its system prompt identity, and reads "
+                                "model/provider from its config.yaml when not explicitly "
+                                "overridden. The child becomes the named bot, not a generic "
+                                "subagent."
                             ),
                         },
                     },
