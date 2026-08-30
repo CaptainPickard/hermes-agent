@@ -555,7 +555,7 @@ delegation:
 
 This is useful for multi-role workflows where a single `delegate_task` batch dispatches specialized bots — for example, a code reviewer profile, a test validator profile, and a security auditor profile — each with its own identity, rules, and model configuration.
 
-The flag is off by default because loading arbitrary profile files into a child prompt is a trust boundary that should be deliberate. Both flags can be combined: a task can name both a `model` and a `profile`, with the explicit model taking precedence over the profile's config.
+The flag is off by default because loading arbitrary profile files into a child prompt is a trust boundary that should be deliberate. Both flags can be combined: a task can name both a `model` and a `profile`, with the explicit model taking precedence over the profile's config. Note that a profile's `config.yaml` model/provider fallback only applies when `allow_model_selection` is also `true`, since the model resolution pipeline is needed to resolve the profile's model to concrete credentials.
 
 :::tip
 The agent handles delegation automatically based on the task complexity. You don't need to explicitly ask it to delegate — it will do so when it makes sense.

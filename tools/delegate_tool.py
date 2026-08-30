@@ -1136,7 +1136,15 @@ def _load_profile_identity(profile_name: str) -> Optional[Dict[str, Optional[str
     Returns ``None`` when the named profile directory does not exist. All file
     and config reads are best-effort so a partial or malformed profile still
     spawns with whichever identity data is available.
+
+    The ``profile_name`` is validated against ``^[A-Za-z0-9_-]+$`` to prevent
+    path traversal (e.g. ``../../.ssh``) from escaping the profiles root.
     """
+    import re
+
+    if not re.match(r"^[A-Za-z0-9_-]+$", profile_name or ""):
+        return None
+
     from hermes_constants import get_default_hermes_root
 
     profile_path = get_default_hermes_root() / "profiles" / profile_name

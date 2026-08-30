@@ -227,7 +227,7 @@ class TestProfileIdentityLoading(unittest.TestCase):
         self.assertEqual(result["provider"], "ollama-cloud")
 
     def test_partial_profile_still_loads(self):
-        """A profile with only SOUL.md still returns a valid dict."""
+        """A profile with only SOUL.md (no IDENTITY) still returns a valid dict."""
         import pathlib
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -247,6 +247,40 @@ class TestProfileIdentityLoading(unittest.TestCase):
         self.assertIsNone(result["agents"])
         self.assertIsNone(result["model"])
         self.assertIsNone(result["provider"])
+
+    def test_path_traversal_rejected(self):
+        """Profile names with slashes or dots are rejected to prevent traversal."""
+        import pathlib
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create a directory outside profiles that a traversal would hit
+            secret_dir = pathlib.Path(tmpdir) / "secret"
+            secret_dir.mkdir()
+            (secret_dir / "SOUL.md").write_text("SECRET DATA")
+
+            with patch(
+                "hermes_constants.get_default_hermes_root",
+                return_value=pathlib.Path(tmpdir),
+            ):
+                # All of these should return None, never reading the secret
+                for bad_name in [
+                    "../../secret",
+                    "../secret",
+                    "foo/../../secret",
+                    ".../.../secret",
+                    "foo/../bar",
+                    "a/b",
+                    "a.b",
+                    ".hidden",
+                    "trailing/",
+                    "/absolute",
+                ]:
+                    with self.subTest(name=bad_name):
+                        result = _load_profile_identity(bad_name)
+                        self.assertIsNone(
+                            result,
+                            f"Path traversal with '{bad_name}' should return None",
+                        )
 
 
 # ---------------------------------------------------------------------------
