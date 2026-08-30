@@ -1035,6 +1035,10 @@ def _get_inherit_mcp_toolsets() -> bool:
 def _get_allow_model_selection() -> bool:
     """Whether delegate_task tasks may carry a per-task ``model`` field.
 
+    Ported (adapted) from Kilo-Org/kilocode#11786. Config key and
+    resolver name match the upstream kilocode-port branch so the two
+    implementations converge on a single design.
+
     Config key: delegation.allow_model_selection (bool, default False).
     Off by default — subagents inherit the parent model unless the user opts
     in, since per-task model routing can send work to a more expensive model
@@ -1058,6 +1062,12 @@ def _get_allow_profile_identity() -> bool:
 
 def _resolve_task_model_creds(model_name: str, parent_agent, base_creds: dict) -> dict:
     """Resolve a per-task model NAME to a full credential bundle.
+
+    Ported (adapted) from Kilo-Org/kilocode#11786. Our version adds two
+    fixes over the upstream kilocode-port branch: (1) provider anchoring
+    on the effective delegation provider from base_creds (not the parent
+    agent's provider), and (2) clearing stale ACP/pin fields on
+    cross-provider switches.
 
     Reuses the existing aggregator-aware ``model_switch.switch_model()``
     pipeline (the same resolution chain the ``/model`` command uses) so name

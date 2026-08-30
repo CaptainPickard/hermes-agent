@@ -544,6 +544,8 @@ With the flag on, `delegate_task` gains an optional `model` field (on both the s
 
 The flag is off by default because per-task routing can send work to a more expensive model than you expect, and because the schema field only appears when you opt in (keeping the tool surface minimal otherwise).
 
+This feature shares a common origin with the [kilocode-port](https://github.com/NousResearch/hermes-agent/tree/kilocode-port/per-task-delegation-model) branch (Kilo-Org/kilocode#11786). Both implementations use the same config key (`allow_model_selection`), resolver function (`_resolve_task_model_creds`), and `switch_model()` pipeline. This fork's version adds provider-anchoring fixes, stale ACP field clearing, and integrates with per-task profile identity.
+
 ### Per-task profile identity
 
 Set `allow_profile_identity: true` to let the agent name a **Hermes profile** per task. When a task carries a `profile` field, the child loads that profile's `SOUL.md`, `IDENTITY.md`, and `AGENTS.md` as its system prompt identity, and reads `model`/`provider` from its `config.yaml` when the task doesn't explicitly override them. The child "becomes" the named bot rather than a generic subagent.
