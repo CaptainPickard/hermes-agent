@@ -3883,6 +3883,43 @@ def _finalize_child_results(
             except Exception:
                 logger.debug("Subagent cost rollup failed", exc_info=True)
 
+        # Write descriptive session titles to each child's session DB.
+        # Replaces the generic "Subagent Session" label in the WebUI sidebar
+        # with "Devbot - <goal preview>" etc. Best-effort, never breaks.
+        _parent_db = getattr(parent_agent, "_session_db", None)
+        _parent_db_path = getattr(_parent_db, "db_path", None) if _parent_db else None
+        if not _parent_db_path:
+            try:
+                from hermes_constants import get_default_hermes_root
+                _profile = getattr(parent_agent, "profile", None) or "io"
+                _parent_db_path = str(
+                    get_default_hermes_root() / "profiles" / _profile / "state.db"
+                )
+            except Exception:
+                _parent_db_path = None
+        if _parent_db_path:
+            for entry in results:
+                try:
+                    task_index = entry.get("task_index", -1)
+                    child = child_by_index.get(task_index)
+                    if child is None:
+                        continue
+                    _child_sid = getattr(child, "session_id", None)
+                    _existing_title = getattr(child, "_session_title_hint", None)
+                    if _child_sid and _existing_title:
+                        import sqlite3 as _sqlite3
+                        _conn = _sqlite3.connect(str(_parent_db_path))
+                        _conn.execute(
+                            "UPDATE sessions SET title = ? WHERE id = ?",
+                            (_existing_title, str(_child_sid)),
+                        )
+                        _conn.commit()
+                        _conn.close()
+                except Exception:
+                    logger.debug(
+                        "Could not write session title for child %s", task_index
+                    )
+
 
 def _run_child_lifecycle(
     task_index: int,
@@ -4376,6 +4413,38 @@ def delegate_task(
                 child._delegate_output_schema = _task_schema
             except Exception:
                 logger.debug("Could not attach output schema to child %d", i)
+        # Descriptive session title for the WebUI sidebar. Without this,
+        # subagent sessions show as "Subagent session" because
+        # platform="subagent" skips auto-titling. Write directly to the
+        # child's session DB so the WebUI sidebar shows it immediately.
+        try:
+            _goal_preview = (t.get("goal") or "").replace("\n", " ").strip()
+            if len(_goal_preview) > 80:
+                _goal_preview = _goal_preview[:77] + "..."
+            if _profile_name:
+                _title = f"{_profile_name.capitalize()} - {_goal_preview}"
+            else:
+                _title = _goal_preview or f"Subagent {i}"
+            child._session_title_hint = _title
+            _child_db = getattr(child, "_session_db", None)
+            _child_sid = getattr(child, "session_id", None)
+            _child_db_path = getattr(_child_db, "db_path", None) if _child_db else None
+            if _child_db_path and _child_sid:
+                try:
+                    import sqlite3 as _sqlite3
+                    _conn = _sqlite3.connect(str(_child_db_path))
+                    _conn.execute(
+                        "UPDATE sessions SET title = ? WHERE id = ?",
+                        (_title, str(_child_sid)),
+                    )
+                    _conn.commit()
+                    _conn.close()
+                except Exception:
+                    logger.debug(
+                        "Could not write session title to child DB for %d", i
+                    )
+        except Exception:
+            logger.debug("Could not set session title hint for child %d", i)
         # Tee the child's progress events into its live transcript log.
         # wrap_progress_callback preserves the inner callback contract
         # (including the _flush attribute) and never lets writer failures
