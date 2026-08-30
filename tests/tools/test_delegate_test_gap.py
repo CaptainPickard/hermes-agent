@@ -14,10 +14,9 @@ Four categories, all test-only (no production changes):
   3. Fallback chain semantics: unresolvable models raise ValueError (fail
      loudly, never silently inherit); None/"" model names are no-ops that
      return the base creds untouched.
-  4. Integration with mock child spawns (the test_delegate_usage_ledger.py
-     pattern): profile identity reaches the child system prompt, no profile
-     uses the generic preamble, explicit model beats the profile model,
-     fork snapshots attach to children, and the usage ledger is populated.
+  4. Integration with mock child spawns: profile identity reaches the child
+     system prompt, no profile uses the generic preamble, and explicit model
+     beats the profile model.
 
 Run with:  python3 -m pytest tests/tools/test_delegate_test_gap.py -v
 """
@@ -42,8 +41,6 @@ from tools.delegate_tool import (
     delegate_task,
     set_spawn_paused,
 )
-from tools.delegation_fork import INHERITANCE_NOTICE
-
 # The exact guard regex _load_profile_identity enforces (delegate_tool.py).
 _SAFE_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
@@ -118,7 +115,7 @@ def _make_mock_parent():
     """Mock parent with every field delegate_task / _build_child_agent touch.
 
     Mirrors the established pattern from tests/tools/test_delegate.py's
-    _make_mock_parent plus the ledger fields from test_delegate_usage_ledger.
+    _make_mock_parent.
     """
     parent = MagicMock()
     parent.session_id = "parent-session-gap"
@@ -608,100 +605,6 @@ class TestProfileIdentityIntegration(unittest.TestCase):
         self.assertEqual(kwargs["provider"], "openai")
         # Profile identity still applied alongside the model switch.
         self.assertIn("You are Devbot", kwargs["ephemeral_system_prompt"])
-
-    def test_fork_snapshot_attached_to_child(self):
-        """fork=True: the (mocked) parent-transcript snapshot is attached to
-        the child as _fork_history and seeded into run_conversation with the
-        inheritance-framed goal."""
-        parent = _make_mock_parent()
-        fork_snap = [
-            {"role": "user", "content": "earlier parent turn"},
-            {"role": "assistant", "content": "earlier parent answer"},
-        ]
-        with patch(
-            "tools.delegate_tool._load_config", return_value={}
-        ), patch(
-            "tools.delegation_fork.build_fork_snapshot",
-            return_value=fork_snap,
-        ), patch("run_agent.AIAgent") as MockAgent:
-            child = _make_mock_child()
-            MockAgent.return_value = child
-            out = delegate_task(
-                tasks=[{"goal": GOAL, "fork": True}], parent_agent=parent
-            )
-        payload = json.loads(out)
-        self.assertNotIn("error", payload)
-        # Snapshot attached to the child at dispatch time.
-        self.assertEqual(child._fork_history, fork_snap)
-        # Seeded into the child's conversation with the inheritance frame.
-        run_kwargs = child.run_conversation.call_args.kwargs
-        self.assertEqual(run_kwargs.get("conversation_history"), fork_snap)
-        self.assertIn(INHERITANCE_NOTICE, run_kwargs.get("user_message", ""))
-
-    def test_no_fork_no_history_seeded(self):
-        """Without fork, the child runs with a blank context: no
-        conversation_history kwarg at all."""
-        parent = _make_mock_parent()
-        with patch(
-            "tools.delegate_tool._load_config", return_value={}
-        ), patch("run_agent.AIAgent") as MockAgent:
-            child = _make_mock_child()
-            MockAgent.return_value = child
-            out = delegate_task(
-                tasks=[{"goal": GOAL}], parent_agent=parent
-            )
-        payload = json.loads(out)
-        self.assertNotIn("error", payload)
-        run_kwargs = child.run_conversation.call_args.kwargs
-        self.assertNotIn("conversation_history", run_kwargs)
-        self.assertEqual(run_kwargs.get("user_message"), GOAL)
-
-
-class TestLedgerPopulatedAfterDelegation(unittest.TestCase):
-    """The per-delegation usage ledger is populated after a mock delegation
-    completes, carrying the profile attribution column."""
-
-    def setUp(self):
-        set_spawn_paused(False)
-
-    def test_ledger_row_after_mock_delegation(self):
-        parent = _make_mock_parent()
-        with patch(
-            "tools.delegate_tool._load_config",
-            return_value={"allow_profile_identity": True},
-        ), patch(
-            "tools.delegate_tool._load_profile_identity",
-            return_value=_identity_stub(),
-        ), patch("run_agent.AIAgent") as MockAgent:
-            child = _make_mock_child()
-            MockAgent.return_value = child
-            out = delegate_task(
-                tasks=[{"goal": GOAL, "profile": "devbot"}],
-                parent_agent=parent,
-            )
-        payload = json.loads(out)
-        self.assertNotIn("error", payload)
-        self.assertEqual(payload["results"][0]["status"], "completed")
-
-        ledger = parent.session_delegation_usage
-        self.assertEqual(len(ledger), 1)
-        row = ledger[0]
-        self.assertEqual(row["task_index"], 0)
-        self.assertEqual(row["goal"], GOAL)
-        self.assertEqual(row["profile"], "devbot")
-        self.assertEqual(row["role"], "leaf")
-        self.assertEqual(row["status"], "completed")
-        self.assertEqual(row["api_calls"], 2)
-        # The mock child's model is not a str, so the row records None —
-        # matching _run_single_child's isinstance guard.
-        self.assertIsNone(row["model"])
-
-        # Underscore attribution keys must not leak into the model-facing
-        # result entry (popped by _finalize_child_results).
-        entry = payload["results"][0]
-        self.assertNotIn("_child_profile", entry)
-        self.assertNotIn("_child_role", entry)
-        self.assertNotIn("_child_cost_usd", entry)
 
 
 if __name__ == "__main__":

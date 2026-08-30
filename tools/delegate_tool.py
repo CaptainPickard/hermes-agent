@@ -1140,6 +1140,115 @@ def _resolve_task_model_creds(model_name: str, parent_agent, base_creds: dict) -
     return creds
 
 
+def _resolve_profile_model_creds(
+    profile_identity: Dict[str, Optional[str]],
+    parent_agent,
+    base_creds: dict,
+) -> dict:
+    """Resolve a profile's config.yaml model (+ provider) to a creds bundle.
+
+    The profile's ``model`` and ``provider`` are ONE routing unit (P1 #2):
+    when BOTH are configured, the model resolves against the PROFILE's
+    provider — not the parent/delegation provider — so a parent on provider
+    A running a profile configured for provider B actually lands on B (the
+    right endpoint, credentials, and billing) instead of silently resolving
+    the name against A's catalog.
+
+    Resolution precedence:
+
+    1. Profile model + provider → full runtime-provider resolution anchored
+       on the profile's provider (same system the ``delegation.provider``
+       pin uses, so base_url/api_key/api_mode/request_overrides all come
+       from the profile's provider, not the parent's).
+    2. Profile model only → ``_resolve_task_model_creds`` against the
+       parent/delegation anchor (prior behavior, unchanged).
+    3. Neither → ``base_creds`` untouched.
+
+    Raises ValueError with a user-facing message when the profile's
+    provider cannot be resolved or has no API key — a misconfigured profile
+    must fail the dispatch loudly, never silently fall back to the parent's
+    credentials on a provider the user explicitly moved away from.
+    """
+    profile_model = str(profile_identity.get("model") or "").strip()
+    profile_provider = str(profile_identity.get("provider") or "").strip()
+    if not profile_model:
+        return base_creds
+    if not profile_provider:
+        # No provider in the profile config — resolve the model name
+        # against the parent/delegation anchor (prior behavior).
+        return _resolve_task_model_creds(profile_model, parent_agent, base_creds)
+
+    # Both model and provider: resolve as one routing unit against the
+    # profile's provider.
+    try:
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+
+        runtime = resolve_runtime_provider(
+            requested=profile_provider, target_model=profile_model
+        )
+    except Exception as exc:
+        raise ValueError(
+            f"profile provider '{profile_provider}' could not be resolved: {exc}. "
+            f"Check that the provider is configured (API key set, valid provider "
+            f"name) in the profile's config.yaml."
+        ) from exc
+
+    runtime_api_key = runtime.get("api_key", "")
+    if not runtime_api_key:
+        raise ValueError(
+            f"profile provider '{profile_provider}' resolved but has no API "
+            f"key. Set the appropriate environment variable or run 'hermes "
+            f"auth' so the profile's provider can be used."
+        )
+
+    creds = dict(base_creds)
+    # The profile's explicitly configured model wins over the provider's
+    # own default (same precedence as the delegation.provider pin).
+    creds["model"] = profile_model or runtime.get("model")
+    runtime_provider_name = runtime.get("provider")
+    creds["provider"] = (
+        profile_provider
+        if runtime_provider_name == _RUNTIME_PROVIDER_CUSTOM
+        else (runtime_provider_name or profile_provider)
+    )
+    creds["base_url"] = runtime.get("base_url")
+    creds["api_key"] = runtime_api_key
+    creds["api_mode"] = runtime.get("api_mode")
+    creds["request_overrides"] = runtime.get("request_overrides") or {}
+    creds["max_output_tokens"] = runtime.get("max_output_tokens")
+    # Cross-provider switch: stale ACP/pin fields carried over from the
+    # base bundle would force _build_child_agent back onto the pinned
+    # transport (and its copilot-acp provider override), silently rerouting
+    # the child away from the profile's provider. Replace them with the
+    # profile provider's own runtime values (same clearing pattern as
+    # _resolve_task_model_creds applies to provider-scoped fields).
+    creds["command"] = runtime.get("command")
+    creds["args"] = list(runtime.get("args") or [])
+    return creds
+
+
+def _validate_profile_name(name: Optional[str]) -> bool:
+    """Validate a profile name before ANY filesystem access.
+
+    Two controls, both required before ``profile_path.is_dir()`` can ever run:
+
+    1. ``^[A-Za-z0-9_-]+$`` — path-traversal guard (e.g. ``../../.ssh``
+       can never match, so the name can't escape the profiles root).
+    2. Length <= 255 — filesystem component limit. A regex-valid name
+       longer than the limit would raise ``OSError: ENAMETOOLONG`` from
+       the directory probe below, so it is rejected here instead.
+    """
+    import re
+
+    if not isinstance(name, str):
+        return False
+    if not re.match(r"^[A-Za-z0-9_-]+$", name):
+        return False
+    if len(name) > 255:
+        return False
+    return True
+
+
 def _load_profile_identity(profile_name: str) -> Optional[Dict[str, Optional[str]]]:
     """Load a named Hermes profile's identity files and model config.
 
@@ -1147,18 +1256,28 @@ def _load_profile_identity(profile_name: str) -> Optional[Dict[str, Optional[str
     and config reads are best-effort so a partial or malformed profile still
     spawns with whichever identity data is available.
 
-    The ``profile_name`` is validated against ``^[A-Za-z0-9_-]+$`` to prevent
-    path traversal (e.g. ``../../.ssh``) from escaping the profiles root.
+    The ``profile_name`` is validated by ``_validate_profile_name`` (regex +
+    length) to prevent path traversal (e.g. ``../../.ssh``) and
+    ENAMETOOLONG filesystem errors.
     """
-    import re
-
-    if not re.match(r"^[A-Za-z0-9_-]+$", profile_name or ""):
+    if not _validate_profile_name(profile_name):
         return None
 
     from hermes_constants import get_default_hermes_root
 
     profile_path = get_default_hermes_root() / "profiles" / profile_name
-    if not profile_path.is_dir():
+    try:
+        if not profile_path.is_dir():
+            return None
+    except OSError:
+        # ENAMETOOLONG and friends: the guard above already rejects the
+        # known-bad shapes, but a hostile filesystem (or an OS with a
+        # smaller component limit) can still raise here — degrade to
+        # "profile not found" instead of crashing the delegation call.
+        logger.debug(
+            "profile_path.is_dir() raised for %r; treating as not found",
+            profile_name,
+        )
         return None
 
     result: Dict[str, Optional[str]] = {
@@ -1167,6 +1286,10 @@ def _load_profile_identity(profile_name: str) -> Optional[Dict[str, Optional[str
         "agents": None,
         "model": None,
         "provider": None,
+        # The validated name, so downstream consumers (child construction,
+        # usage attribution) don't have to re-derive it from the caller's
+        # task dict.
+        "_profile_name": profile_name,
     }
     for key, filename in (
         ("soul", "SOUL.md"),
@@ -2267,6 +2390,11 @@ def _build_child_agent(
     # Stash the post-degrade role for introspection (leaf if the
     # kill switch or depth bounded the caller's requested role).
     child._delegate_role = effective_role
+    # Stash the delegated profile name for downstream attribution
+    # (usage ledger, registry display). Reads the validated name the
+    # dispatcher stored in the identity dict — never the raw task field.
+    if profile_identity and profile_identity.get("_profile_name"):
+        child._delegate_profile = profile_identity["_profile_name"]
     # Stash subagent identity for nested-delegation event propagation and
     # for _run_single_child / interrupt_subagent to look up by id.
     child._subagent_id = subagent_id
@@ -4115,6 +4243,17 @@ def delegate_task(
     children = []
     allow_model_selection = _get_allow_model_selection()
     allow_profile_identity = _get_allow_profile_identity()
+
+    # ── Pass 1: atomic preflight ─────────────────────────────────────────
+    # Resolve EVERY task's model/profile/credentials into immutable plans
+    # BEFORE any child is constructed. If any task fails resolution, the
+    # whole batch is refused with zero children built — a mid-batch failure
+    # can never orphan an already-constructed child (SessionDB handle open,
+    # registered in _active_children, live transcript created) with no
+    # cleanup path. Construction (Pass 2) is then all-or-nothing by
+    # construction: it consumes pre-resolved plans and does no I/O that can
+    # fail per-task model/profile resolution.
+    task_plans: List[Dict[str, Any]] = []
     for i, t in enumerate(task_list):
         # Per-task role beats top-level; normalise again so unknown
         # per-task values warn and degrade to leaf uniformly.
@@ -4162,19 +4301,46 @@ def delegate_task(
                     f"profiles/{_profile_name}/."
                 )
             # Profile config fills missing model/provider when the task
-            # doesn't explicitly override them.
+            # doesn't explicitly override them. The profile's model and
+            # provider are one routing unit (P1 #2): resolve against the
+            # PROFILE's provider, never the parent's.
             if not task_model_request:
                 _profile_model = _profile_identity.get("model")
                 if _profile_model and allow_model_selection:
                     try:
-                        task_creds = _resolve_task_model_creds(
-                            _profile_model, parent_agent, creds
+                        task_creds = _resolve_profile_model_creds(
+                            _profile_identity, parent_agent, creds
                         )
                     except ValueError as exc:
                         return tool_error(
                             f"Task {i}: profile '{_profile_name}' model "
                             f"'{_profile_model}' could not be resolved: {exc}"
                         )
+
+        task_plans.append(
+            {
+                "index": i,
+                "task": t,
+                "role": effective_role,
+                "context": _child_context,
+                "schema": _task_schema,
+                "creds": task_creds,
+                "profile_identity": _profile_identity,
+            }
+        )
+
+    # ── Pass 2: construction ─────────────────────────────────────────────
+    # Consume the pre-resolved plans. No model resolution or profile loading
+    # happens here, so a resolution failure can never strike after some
+    # children already exist.
+    for plan in task_plans:
+        i = plan["index"]
+        t = plan["task"]
+        effective_role = plan["role"]
+        _child_context = plan["context"]
+        _task_schema = plan["schema"]
+        task_creds = plan["creds"]
+        _profile_identity = plan["profile_identity"]
 
         try:
             child = _build_child_preserving_parent_tools(
