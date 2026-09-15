@@ -3572,6 +3572,18 @@ def _run_single_child(
                 entry["schema_retries"] = _schema_retries
             if not _schema_valid and _schema_errors:
                 entry["schema_errors"] = _schema_errors
+            if _schema_valid is False and summary:
+                # Upstream 45ab3ad57f: a contract miss after the bounded
+                # retry does NOT discard the child's work — the raw final
+                # text stays in `summary` with schema_valid=false; the
+                # note says it is unvalidated so a status-only reader
+                # cannot mistake it for contract-compliant output.
+                entry["schema_note"] = (
+                    "Final answer does not satisfy the declared output_schema"
+                    + (" (after 1 retry)" if _schema_retries else "")
+                    + "; `summary` is the child's raw, UNVALIDATED final text — extract what you need from it "
+                    "yourself (see schema_errors) rather than re-running the task."
+                )
 
         # A steer that queued after the child's final assistant turn had no
         # tool batch left to drain into.  The finalizer hands the undelivered
@@ -4625,9 +4637,23 @@ def delegate_task(
                         )
                         dur = entry.get("duration_seconds", 0)
                         status = entry.get("status", "?")
-                        icon = "✓" if status == "completed" else "✗"
+                        # Upstream 45ab3ad57f: a schema-missed-but-completed
+                        # child is a WARNING, not a success or failure: show
+                        # ⚠ with the raw-text-returned reason.
+                        _schema_invalid = (
+                            entry.get("schema_valid") is False
+                            and status == "completed"
+                        )
+                        icon = "⚠" if _schema_invalid else (
+                            "✓" if status == "completed" else "✗"
+                        )
                         remaining = n_tasks - completed_count
                         completion_line = f"{icon} [{idx+1}/{n_tasks}] {label}  ({dur}s)"
+                        if _schema_invalid:
+                            completion_line += (
+                                " — output_schema not satisfied — raw text"
+                                " returned (schema_valid=false)"
+                            )
                         if spinner_ref:
                             try:
                                 spinner_ref.print_above(completion_line)
@@ -5571,7 +5597,9 @@ DELEGATE_TASK_SCHEMA = {
                                 "child up front; parent validates with one "
                                 "bounded correction retry; result gains "
                                 "schema_valid, plus schema_errors on "
-                                "failure). Keep it forgiving — require only "
+                                "failure — the child's raw text is still "
+                                "returned as summary, never discarded). "
+                                "Keep it forgiving — require only "
                                 "fields you will read."
                             ),
                         },
