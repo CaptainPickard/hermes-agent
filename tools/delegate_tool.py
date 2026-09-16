@@ -2871,6 +2871,7 @@ def _run_single_child(
     # Without this, the parent's _last_activity_ts freezes when delegate_task
     # starts and the gateway eventually kills the agent for "no activity".
     _heartbeat_stop = threading.Event()
+    _heartbeat_result = threading.Event()
     # Stale detection: track the child's (tool, iteration, activity_ts) across
     # heartbeat cycles. If none advances, count the cycle as stale.
     # Different thresholds for idle vs in-tool (see _HEARTBEAT_STALE_CYCLES_*).
@@ -2934,12 +2935,17 @@ def _run_single_child(
                 if _stale_count[0] >= stale_limit:
                     logger.warning(
                         "Subagent %d appears stale (no progress for %d "
-                        "heartbeat cycles, tool=%s) — stopping heartbeat",
+                        "heartbeat cycles, tool=%s) — abandoning its wait",
                         task_index,
                         _stale_count[0],
                         child_tool or "<none>",
                     )
-                    break  # stop touching parent, let gateway timeout fire
+                    # A finite runtime (-Q / Bot Chat one-shot delivery child)
+                    # has no gateway inactivity watchdog behind us: the stale
+                    # verdict must end await_child's wait itself, not just
+                    # stop the heartbeat (upstream 90663bff30, #109749).
+                    _heartbeat_result.set()
+                    break
 
                 if child_tool:
                     desc = (
@@ -3202,8 +3208,19 @@ def _run_single_child(
             _child_context.run,
             _run_with_thread_capture,
         )
+        # One wait covers both ways out: the worker finishing, or the
+        # heartbeat's stale verdict (set in _heartbeat_loop, mirrored on the
+        # worker's done-callback). Without the second, a worker wedged after
+        # its final answer holds a finite (-Q / Bot Chat one-shot) turn —
+        # and its session lease — forever, since that runtime has no gateway
+        # inactivity watchdog (upstream 90663bff30, #109749).
+        _heartbeat_result_set = _heartbeat_result
+        _child_future.add_done_callback(lambda _f: _heartbeat_result_set.set())
         try:
-            result = _child_future.result(timeout=child_timeout)
+            _heartbeat_result_set.wait(timeout=child_timeout)
+            if not _child_future.done():
+                raise FuturesTimeoutError()
+            result = _child_future.result()
         except Exception as _timeout_exc:
             # No consumer boundary remains once this owner stops waiting for
             # the child. Close acceptance before any completion callback and
@@ -3273,7 +3290,15 @@ def _run_single_child(
                     pass
 
             if is_timeout:
-                if child_api_calls == 0:
+                if child_timeout is None:
+                    # Wait ended by the heartbeat's stale verdict, not a
+                    # configured timeout (upstream 90663bff30, #109749).
+                    _err = (
+                        f"Subagent stopped making progress after "
+                        f"{child_api_calls} API call(s) (heartbeat stale "
+                        f"threshold) — the pending worker was abandoned."
+                    )
+                elif child_api_calls == 0:
                     _err = (
                         f"Subagent timed out after {child_timeout}s without "
                         f"making any API call — the child never reached its "
