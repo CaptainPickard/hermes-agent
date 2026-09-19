@@ -1695,24 +1695,36 @@ class HermesACPAgent(acp.Agent):
 
     async def cancel(self, session_id: str, **kwargs: Any) -> None:
         state = self.session_manager.get_session(session_id)
-        if state and state.cancel_event:
-            with state.runtime_lock:
-                if state.is_running and state.current_prompt_text:
-                    state.interrupted_prompt_text = state.current_prompt_text
-                # Publish cancellation and hard-stop the agent before another
-                # prompt can acquire this lock and mistake the turn for
-                # redirectable work.
-                state.cancel_event.set()
-                try:
-                    if getattr(state, "agent", None):
-                        request_hard_interrupt(state.agent)
-                except Exception:
-                    logger.debug(
-                        "Failed to interrupt ACP session %s",
-                        session_id,
-                        exc_info=True,
+        if not (state and state.cancel_event):
+            return
+        with state.runtime_lock:
+            if state.is_running and state.current_prompt_text:
+                state.interrupted_prompt_text = state.current_prompt_text
+            # Publish cancellation and hard-stop the agent before another
+            # prompt can acquire this lock and mistake the turn for
+            # redirectable work. Background delegations are detached from
+            # the turn's fan-out; they end with the cancel too
+            # (upstream b71359066c, #114456).
+            state.cancel_event.set()
+            try:
+                if getattr(state, "agent", None):
+                    request_hard_interrupt(state.agent)
+                    # Background delegations end with the cancel.
+                    from tools.async_delegation import interrupt_for_session
+
+                    interrupt_for_session(
+                        parent_session_id=str(
+                            getattr(state.agent, "session_id", "") or ""
+                        ),
+                        reason="acp_cancel",
                     )
-            logger.info("Cancelled session %s", session_id)
+            except Exception:
+                logger.debug(
+                    "Failed to interrupt ACP session %s",
+                    session_id,
+                    exc_info=True,
+                )
+        logger.info("Cancelled session %s", session_id)
 
     async def fork_session(
         self,

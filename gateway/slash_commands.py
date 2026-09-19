@@ -1484,11 +1484,22 @@ class GatewaySlashCommandsMixin:
             )
             return EphemeralReply(t("gateway.stop.stopped"))
 
-        # No running agent anywhere for this scope. A platform status
-        # indicator can still be stuck — e.g. Slack's persistent
-        # assistant.threads.setStatus survives a gateway restart or a turn
-        # that died without a final send (#32295). Best-effort clear so
-        # /stop always dismisses a phantom "is thinking...".
+        # No running agent anywhere for this scope. Background delegations
+        # the session dispatched in an earlier turn still count as
+        # "active": stop them; each returns as an interrupted completion
+        # (upstream b71359066c, #114456).
+        from tools.async_delegation import interrupt_for_session
+
+        if interrupt_for_session(
+            session_key=session_key,
+            reason="stop_command",
+            parent_session_id=str(getattr(session_entry, "session_id", "") or ""),
+        ):
+            return EphemeralReply(t("gateway.stop.stopped"))
+        # A platform status indicator can still be stuck — e.g. Slack's
+        # persistent assistant.threads.setStatus survives a gateway restart
+        # or a turn that died without a final send (#32295). Best-effort
+        # clear so /stop always dismisses a phantom "is thinking...".
         adapter = getattr(self, "adapters", {}).get(source.platform)
         if adapter and hasattr(adapter, "_stop_typing_with_metadata"):
             try:

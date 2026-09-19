@@ -3439,6 +3439,7 @@ def _run_single_child(
         completed = result.get("completed", False)
         interrupted = result.get("interrupted", False)
         api_calls = result.get("api_calls", 0)
+        _interrupt_note = ""
 
         # The child emits the literal "(empty)" sentinel (see run_agent.py) when
         # it gives up after repeated empty-LLM-response retries — typically a
@@ -3449,6 +3450,31 @@ def _run_single_child(
 
         if interrupted:
             status = "interrupted"
+            # Upstream b71359066c (#114456): the loop's final_response is a
+            # placeholder here ("Operation interrupted."… also appended as
+            # the closing assistant row); the completion must carry what the
+            # child actually had so far — its last real assistant text — and
+            # keep the placeholder as the error.
+            try:
+                from agent.message_content import flatten_message_text
+
+                _placeholders = {"", summary.strip(), "Operation interrupted."}
+                _partial = ""
+                for _m in reversed(result.get("messages") or []):
+                    if not isinstance(_m, dict) or _m.get("role") != "assistant":
+                        continue
+                    _t = (flatten_message_text(_m.get("content")) or "").strip()
+                    if _t and _t not in _placeholders:
+                        _partial = _t
+                        break
+                if _partial:
+                    _interrupt_note = summary.strip()
+                    summary = _partial
+            except Exception as _partial_exc:
+                logger.debug(
+                    "Interrupted partial-output extraction failed: %s",
+                    _partial_exc,
+                )
         elif summary and not _empty_sentinel:
             # A summary means the subagent produced usable output.
             # exit_reason ("completed" vs "max_iterations") already
@@ -3563,6 +3589,11 @@ def _run_single_child(
         )
         if status == "failed":
             entry["error"] = result.get("error", "Subagent did not produce a response.")
+        elif _interrupt_note:
+            # Upstream b71359066c: interrupted children keep the placeholder
+            # ("Operation interrupted.") as error while summary carries the
+            # child's real partial output.
+            entry["error"] = _interrupt_note
 
         # T1-24: schema-validation outcome — emitted ONLY when a schema was
         # requested, so legacy (schema-less) payloads keep their exact shape.
@@ -5417,7 +5448,8 @@ def _build_top_level_description() -> str:
         "- Tasks needing user interaction -> subagents cannot ask questions\n"
         "- Durable work that must survive this session -> cronjob or "
         "terminal(background=True, notify=True); /stop, /new, or "
-        "process exit discards running subagents.\n\n"
+        "process exit halts running subagents (whole tree); each returns "
+        "an 'interrupted' completion with partial output.\n\n"
         "RULES:\n"
         "- Children know nothing of this conversation: pass everything needed "
         "via 'context', including any required output language, tone, or "
