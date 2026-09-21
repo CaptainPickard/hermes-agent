@@ -2418,11 +2418,18 @@ def _build_child_agent(
     parent_sid = getattr(parent_agent, "session_id", None)
     if parent_sid and getattr(child, "_session_init_model_config", None) is not None:
         child._session_init_model_config["_delegate_from"] = parent_sid
-
     # Share a credential pool with the child when possible so subagents can
     # rotate credentials on rate limits instead of getting pinned to one key.
+    # Named custom providers may share one gateway URL with different
+    # credentials, so the inherited requested-provider identity takes
+    # precedence over URL-only pool matching (upstream b905042d37, #45763).
+    child_requested_provider = (
+        override_provider
+        or getattr(parent_agent, "requested_provider", None)
+    )
     child_pool = _resolve_child_credential_pool(
-        effective_provider, parent_agent, effective_base_url
+        effective_provider, parent_agent, effective_base_url,
+        effective_requested_provider=child_requested_provider,
     )
     if child_pool is not None:
         child._credential_pool = child_pool
@@ -4908,6 +4915,7 @@ def _resolve_child_credential_pool(
     effective_provider: Optional[str],
     parent_agent,
     effective_base_url: Optional[str] = None,
+    effective_requested_provider: Optional[str] = None,
 ):
     """Resolve a credential pool for the child agent.
 
@@ -4926,6 +4934,11 @@ def _resolve_child_credential_pool(
     We therefore resolve custom runtimes by endpoint identity (the
     ``custom:<name>`` pool key derived from the base_url) and only share the
     parent's pool when both resolve to the *same* custom endpoint.
+
+    Named custom providers may share one gateway URL with different
+    credentials, so the inherited requested-provider identity takes precedence
+    over URL-only matching when supplied: the child must not lease the first
+    pool registered for a shared endpoint (upstream b905042d37 / #45763).
     """
     if not effective_provider:
         return getattr(parent_agent, "_credential_pool", None)
@@ -4940,7 +4953,9 @@ def _resolve_child_credential_pool(
         try:
             from agent.credential_pool import get_custom_provider_pool_key, load_pool
 
-            child_key = get_custom_provider_pool_key(effective_base_url)
+            child_key = get_custom_provider_pool_key(
+                effective_base_url, provider_name=effective_requested_provider
+            )
             if child_key is None:
                 # Unregistered endpoint (raw delegation.base_url with no
                 # matching custom_providers entry) -> no shared pool exists.
@@ -4950,7 +4965,8 @@ def _resolve_child_credential_pool(
 
             # Reuse the parent's pool only when it is the same custom endpoint.
             parent_key = get_custom_provider_pool_key(
-                getattr(parent_agent, "base_url", None)
+                getattr(parent_agent, "base_url", None),
+                provider_name=getattr(parent_agent, "requested_provider", None),
             )
             if (
                 parent_pool is not None
