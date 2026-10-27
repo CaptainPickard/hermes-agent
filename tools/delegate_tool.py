@@ -120,6 +120,8 @@ def _get_subagent_approval_callback():
 # — the model has no toolsets argument. Subagents inherit the parent's toolsets.
 
 _DEFAULT_MAX_CONCURRENT_CHILDREN = 10
+# Bound images on each task's first turn independently of batch concurrency.
+_MAX_TASK_IMAGES = 8
 # One-shot guard: the high-concurrency cost advisory is emitted at most once
 # per process. _get_max_concurrent_children() runs on every get_definitions()
 # schema rebuild (via _build_top_level_description / _build_tasks_param_description),
@@ -2886,13 +2888,16 @@ def _run_single_child(
             except Exception as e:
                 logger.debug("Child text relay failed: %s", e)
 
+        _images = getattr(child, "_delegate_images", None)
+        user_message = _build_child_goal_message(goal, _images, child) if _images else goal
+
         def _run_with_thread_capture():
             _worker_thread_holder["t"] = threading.current_thread()
             from agent.delegation_context import delegated_child_context
 
             with delegated_child_context(str(getattr(child, "session_id", "") or "")):
                 return child.run_conversation(
-                    user_message=goal,
+                    user_message=user_message,
                     task_id=child_task_id,
                     stream_callback=_relay_child_text,
                 )
@@ -3698,6 +3703,68 @@ def _validate_batch_tasks(task_list: List[Dict[str, Any]]) -> Optional[str]:
     return None
 
 
+def _normalize_task_images(task: dict, i: int) -> tuple[Optional[List[str]], Optional[str]]:
+    """Validate and strip optional images before constructing any children."""
+    raw = task.get("images")
+    if raw is None:
+        return None, None
+    if isinstance(raw, str):
+        # Legacy model calls sometimes emit a scalar despite the array schema.
+        raw = [raw]
+    if not isinstance(raw, list):
+        return None, f"Task {i} 'images' must be an array of local file paths or http(s) URLs."
+    cleaned: List[str] = []
+    for item in raw:
+        if not isinstance(item, str) or not item.strip():
+            return None, f"Task {i} 'images' entries must be non-empty strings (local file paths or http(s) URLs)."
+        cleaned.append(item.strip())
+    if len(cleaned) > _MAX_TASK_IMAGES:
+        return None, (
+            f"Task {i} has {len(cleaned)} images; the per-task limit is {_MAX_TASK_IMAGES}. "
+            "Trim to the images the child actually needs to see."
+        )
+    return (cleaned or None), None
+
+
+def _build_child_goal_message(goal: str, images: List[str], child) -> Any:
+    """Route forwarded images on the child's first user turn, without blocking a spawn on failure."""
+    try:
+        from agent.image_routing import build_native_content_parts, decide_image_input_mode
+        from hermes_cli.config import load_config_readonly
+
+        urls = [ref for ref in images if ref.startswith(("http://", "https://", "data:image/"))]
+        paths = [ref for ref in images if not ref.startswith(("http://", "https://", "data:image/"))]
+        try:
+            config = load_config_readonly()
+        except Exception:
+            logger.debug("delegate_task: could not load image routing config; using auto mode", exc_info=True)
+            config = None
+        mode = decide_image_input_mode(
+            str(getattr(child, "provider", "") or ""),
+            str(getattr(child, "model", "") or ""),
+            config,
+            requested_provider=str(getattr(child, "requested_provider", "") or ""),
+        )
+        if mode == "native":
+            parts, skipped = build_native_content_parts(goal, paths, urls)
+            if skipped:
+                logger.warning("delegate_task: skipped %d unreadable image(s) for subagent: %s", len(skipped), ", ".join(skipped[:3]))
+            return parts if any(part.get("type") == "image_url" for part in parts) else goal
+        hints = []
+        for path in paths:
+            if os.path.isfile(path):
+                hints.append(f"[Image attached at: {path}]")
+            else:
+                logger.warning("delegate_task: image path not found, not forwarded: %s", path)
+        hints.extend(f"[Image attached: {url}]" for url in urls)
+        if not hints:
+            return goal
+        return goal + "\n\n" + "\n".join(hints) + "\nUse vision_analyze to inspect these images."
+    except Exception:
+        logger.warning("delegate_task: image forwarding failed; sending text-only goal", exc_info=True)
+        return goal
+
+
 def delegate_task(
     goal: Optional[str] = None,
     context: Optional[str] = None,
@@ -3706,6 +3773,7 @@ def delegate_task(
     role: Optional[str] = None,
     background: Optional[bool] = None,
     output_schema: Optional[Dict[str, Any]] = None,
+    images: Optional[List[str]] = None,
     action: Optional[str] = None,
     subagent_id: Optional[str] = None,
     message: Optional[str] = None,
@@ -3893,6 +3961,17 @@ def delegate_task(
             return tool_error(f"Task {i} output_schema invalid: {schema_err}")
         task_schemas.append(coerced_schema)
 
+    # Fail the entire batch before constructing any child if one image list is malformed.
+    task_images: List[Optional[List[str]]] = []
+    for i, task in enumerate(task_list):
+        image_task = task
+        if task.get("images") is None and len(task_list) == 1 and images is not None:
+            image_task = {**task, "images": images}
+        cleaned, image_err = _normalize_task_images(image_task, i)
+        if image_err:
+            return tool_error(image_err)
+        task_images.append(cleaned)
+
     overall_start = time.monotonic()
     results = []
 
@@ -4031,6 +4110,11 @@ def delegate_task(
                 child._delegate_output_schema = _task_schema
             except Exception:
                 logger.debug("Could not attach output schema to child %d", i)
+        if task_images[i]:
+            try:
+                child._delegate_images = task_images[i]
+            except Exception:
+                logger.warning("Could not attach images to child %d; continuing without them", i, exc_info=True)
         # Tee the child's progress events into its live transcript log.
         # wrap_progress_callback preserves the inner callback contract
         # (including the _flush attribute) and never lets writer failures
@@ -4954,6 +5038,17 @@ DELEGATE_TASK_SCHEMA = {
                                 "fields you will read."
                             ),
                         },
+                        "images": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "maxItems": _MAX_TASK_IMAGES,
+                            "description": (
+                                "Optional images this child must SEE (max 8): local file paths "
+                                "or http(s) URLs. Vision-capable children receive pixels on "
+                                "their first turn; non-vision children get path/URL hints for "
+                                "vision_analyze. Put text file paths in context instead."
+                            ),
+                        },
                         "model": {
                             "type": "string",
                             "description": (
@@ -5089,6 +5184,7 @@ registry.register(
         role=args.get("role"),
         background=_model_background_value(args, kw.get("parent_agent")),
         output_schema=args.get("output_schema"),
+        images=args.get("images"),
         action=args.get("action"),
         subagent_id=args.get("subagent_id"),
         message=args.get("message"),

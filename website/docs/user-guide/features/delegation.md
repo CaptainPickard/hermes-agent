@@ -115,6 +115,23 @@ delegate_task(
 )
 ```
 
+### Forwarding Images to a Subagent
+
+When a task is visual, pass its optional `images` list (up to 8 local file paths or `http(s)` URLs). Each task receives only its own images:
+
+```python
+delegate_task(tasks=[{
+    "goal": "Compare the rendered dashboard to this design mock",
+    "context": "The app runs at http://localhost:3000.",
+    "images": ["/home/user/mocks/dashboard-v2.png",
+               "https://cdn.example.com/current-render.png"],
+}])
+```
+
+Delivery follows `agent.image_input_mode`, just like user-attached images. A vision-capable child receives the image pixels on its first user turn (local files become data URLs; remote URLs pass through). A child routed to text mode receives `[Image attached at: <path>]` or `[Image attached: <url>]` hints and a `vision_analyze` pointer instead.
+
+Malformed lists fail the whole call before any child spawns. Unreadable local paths are skipped with a log warning; forwarding errors fall back to the plain text goal. Put text file paths in `context`, not `images`.
+
 ## Batch Mode Details
 
 When a top-level agent provides a `tasks` array, Hermes returns one background handle, runs the subagents in parallel, and posts one consolidated result after every child finishes. An orchestrator subagent waits for its batch in the current turn so it can synthesize the results.
