@@ -31,6 +31,19 @@ delegate_task(tasks=[
 ])
 ```
 
+## Task images (vision forwarding)
+
+Each task may include an optional `images` list of up to 8 local image paths or http(s) URLs. Images are forwarded only to that child on its **first goal turn**. Vision-capable child models receive image attachments; otherwise the goal includes path/URL hints and an instruction to use `vision_analyze`. Omitting `images` leaves the original goal unchanged.
+
+```python
+delegate_task(tasks=[
+    {"goal": "Review this screenshot", "images": ["/home/user/screenshot.png"]},
+    {"goal": "Read the linked diagram", "images": ["https://example.com/diagram.png"]},
+])
+```
+
+Entries must be non-empty strings; blank and non-string entries are rejected. More than 8 images on any task fails the batch before a child is spawned with an error telling you to `Trim to the images the child actually needs to see.`
+
 ## Structured Output (`output_schema`)
 
 Each task can carry an optional `output_schema`, a JSON Schema object the child's final answer must validate against. The child sees the schema up front as an output contract ("return ONLY the JSON value — no prose, no code fence"); when the answer comes back the parent validates it, and on failure sends the child exactly one bounded correction turn carrying the validation errors verbatim (the schema is not re-pasted). The task's result then gains `schema_valid` (true/false) and, on failure, `schema_errors`.

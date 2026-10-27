@@ -120,6 +120,8 @@ def _get_subagent_approval_callback():
 # — the model has no toolsets argument. Subagents inherit the parent's toolsets.
 
 _DEFAULT_MAX_CONCURRENT_CHILDREN = 10
+# Bound image attachments independently for each child's first goal turn.
+_MAX_TASK_IMAGES = 8
 # One-shot guard: the high-concurrency cost advisory is emitted at most once
 # per process. _get_max_concurrent_children() runs on every get_definitions()
 # schema rebuild (via _build_top_level_description / _build_tasks_param_description),
@@ -1459,6 +1461,65 @@ _LEGACY_EVENT_MAP: Dict[str, DelegateEvent] = {
 def check_delegate_requirements() -> bool:
     """Delegation has no external requirements -- always available."""
     return True
+
+
+def _normalize_task_images(task: dict, i: int) -> tuple[Optional[List[str]], Optional[str]]:
+    """Validate each task's images before any children are constructed."""
+    raw = task.get("images")
+    if raw is None:
+        return None, None
+    if not isinstance(raw, list):
+        return None, f"Task {i} 'images' must be an array of local file paths or http(s) URLs."
+    cleaned: List[str] = []
+    for item in raw:
+        if not isinstance(item, str) or not item.strip():
+            return None, (
+                f"Task {i} 'images' entries must be non-empty strings "
+                "(local file paths or http(s) URLs)."
+            )
+        cleaned.append(item.strip())
+    if len(cleaned) > _MAX_TASK_IMAGES:
+        return None, (
+            f"Task {i} has {len(cleaned)} images; the per-task limit is {_MAX_TASK_IMAGES}. "
+            "Trim to the images the child actually needs to see."
+        )
+    return cleaned or None, None
+
+
+def _build_child_goal_message(goal: str, images: List[str], child) -> Any:
+    """Send image pixels or references with the child's first goal turn."""
+    urls = [ref for ref in images if ref.startswith(("http://", "https://"))]
+    paths = [ref for ref in images if ref not in urls]
+    hints = [f"[Image attached at: {path}]" for path in paths]
+    hints.extend(f"[Image attached: {url}]" for url in urls)
+    fallback = goal + "\n\n" + "\n".join(hints) + "\nUse vision_analyze to inspect these images."
+    try:
+        from agent.image_routing import build_native_content_parts, decide_image_input_mode
+        from hermes_cli.config import load_config_readonly
+
+        try:
+            config = load_config_readonly()
+        except Exception:
+            logger.debug("delegate_task: could not load image routing config; using auto mode", exc_info=True)
+            config = None
+        mode = decide_image_input_mode(
+            str(getattr(child, "provider", "") or ""),
+            str(getattr(child, "model", "") or ""),
+            config,
+            requested_provider=str(getattr(child, "requested_provider", "") or ""),
+        )
+        if mode == "native":
+            parts, skipped = build_native_content_parts(goal, paths, urls)
+            if skipped:
+                logger.warning(
+                    "delegate_task: skipped %d unreadable image(s) for subagent: %s",
+                    len(skipped), ", ".join(skipped[:3]),
+                )
+            return parts if any(part.get("type") == "image_url" for part in parts) else fallback
+        return fallback
+    except Exception:
+        logger.warning("delegate_task: image forwarding failed; sending reference hints", exc_info=True)
+        return fallback
 
 
 def _build_child_system_prompt(
@@ -3196,9 +3257,10 @@ def _run_single_child(
             _worker_thread_holder["t"] = threading.current_thread()
             from agent.delegation_context import delegated_child_context
 
+            _images = getattr(child, "_delegate_images", None)
             with delegated_child_context(str(getattr(child, "session_id", "") or "")):
                 return child.run_conversation(
-                    user_message=goal,
+                    user_message=_build_child_goal_message(goal, _images, child) if _images else goal,
                     task_id=child_task_id,
                     stream_callback=_relay_child_text,
                 )
@@ -4113,6 +4175,7 @@ def delegate_task(
     profile: Optional[str] = None,
     background: Optional[bool] = None,
     output_schema: Optional[Dict[str, Any]] = None,
+    images: Optional[List[str]] = None,
     action: Optional[str] = None,
     subagent_id: Optional[str] = None,
     message: Optional[str] = None,
@@ -4268,6 +4331,12 @@ def delegate_task(
     if not task_list:
         return tool_error("No tasks provided.")
 
+    # Legacy single-goal callers may pass images at the top level. A task's
+    # explicit images field takes precedence, including an empty list.
+    if (len(task_list) == 1 and images is not None
+            and isinstance(task_list[0], dict) and "images" not in task_list[0]):
+        task_list = [{**task_list[0], "images": images}]
+
     # Validate each task has a goal
     for i, task in enumerate(task_list):
         if not isinstance(task, dict):
@@ -4303,6 +4372,14 @@ def delegate_task(
         if schema_err:
             return tool_error(f"Task {i} output_schema invalid: {schema_err}")
         task_schemas.append(coerced_schema)
+
+    # Reject malformed image lists for the whole batch before any child is built.
+    task_images: List[Optional[List[str]]] = []
+    for i, task in enumerate(task_list):
+        cleaned, image_err = _normalize_task_images(task, i)
+        if image_err:
+            return tool_error(image_err)
+        task_images.append(cleaned)
 
     overall_start = time.monotonic()
     results = []
@@ -4481,6 +4558,11 @@ def delegate_task(
             # Explicit-pin preflight failures (e.g. pinned delegation.command
             # missing from PATH) refuse the spawn loudly (#80450).
             return tool_error(str(exc))
+        if task_images[i]:
+            try:
+                child._delegate_images = task_images[i]
+            except Exception:
+                logger.warning("Could not attach images to child %d; continuing without them", i, exc_info=True)
         # Attach the validated schema for the completion-side validation
         # hook in _run_single_child. Absent (None) on schema-less tasks.
         if _task_schema is not None:
@@ -5621,6 +5703,16 @@ DELEGATE_TASK_SCHEMA = {
                                 "background in every task that needs it."
                             ),
                         },
+                        "images": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "maxItems": _MAX_TASK_IMAGES,
+                            "description": (
+                                "Optional images this child must see (max 8): local file paths "
+                                "or http(s) URLs. Vision-capable children receive images on "
+                                "their first turn; others get references for vision_analyze."
+                            ),
+                        },
                         "output_schema": {
                             "type": "object",
                             "description": (
@@ -5741,6 +5833,7 @@ registry.register(
         profile=args.get("profile"),
         background=_model_background_value(args, kw.get("parent_agent")),
         output_schema=args.get("output_schema"),
+        images=args.get("images"),
         action=args.get("action"),
         subagent_id=args.get("subagent_id"),
         message=args.get("message"),
