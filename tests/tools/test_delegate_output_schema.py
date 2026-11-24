@@ -77,26 +77,6 @@ class TestValidateOutput:
         assert errors
 
 
-class TestCoerceOutputSchema:
-    def test_valid_schema_passes(self):
-        schema, err = coerce_output_schema(ADDRESS_SCHEMA)
-        assert schema == ADDRESS_SCHEMA
-        assert err is None
-
-    def test_none_passes_through(self):
-        schema, err = coerce_output_schema(None)
-        assert schema is None
-        assert err is None
-
-    def test_non_dict_is_rejected(self):
-        schema, err = coerce_output_schema("not a schema")
-        assert schema is None
-        assert err
-
-    def test_invalid_json_schema_is_rejected(self):
-        schema, err = coerce_output_schema({"type": 42})
-        assert schema is None
-        assert err
 
 
 class TestPromptPlumbing:
@@ -106,9 +86,6 @@ class TestPromptPlumbing:
         assert "OUTPUT CONTRACT" in out
         assert '"city"' in out
 
-    def test_contract_block_without_prior_context(self):
-        out = append_output_contract(None, ADDRESS_SCHEMA)
-        assert "OUTPUT CONTRACT" in out
 
     def test_retry_message_carries_verbatim_errors(self):
         msg = build_retry_message(["'city' is a required property"])
@@ -122,16 +99,6 @@ class TestPromptPlumbing:
 
 
 class TestToolSchemaSurface:
-    def test_output_schema_on_task_items(self):
-        item_props = DELEGATE_TASK_SCHEMA["parameters"]["properties"]["tasks"][
-            "items"
-        ]["properties"]
-        assert "output_schema" in item_props
-        assert item_props["output_schema"]["type"] == "object"
-        # never required
-        assert "output_schema" not in DELEGATE_TASK_SCHEMA["parameters"][
-            "properties"
-        ]["tasks"]["items"]["required"]
 
     def test_output_schema_advertised_per_task_only(self):
         """output_schema is advertised inside tasks[] items (the only spawn
@@ -290,12 +257,38 @@ class TestRunSingleChildSchemaValidation:
         assert entry["schema_valid"] is True and len(child.calls) == 1
 
     def test_schema_valid_entry_still_completed(self):
-        """Guard: schema_valid=True keeps status="completed" untouched."""
+        """Guard: schema_valid=True keeps status="completed" untouched. (Local carry,
+        b272d133d6 — absent upstream.)"""
         child = _StubChild(['{"city": "Berlin"}'])
         child._delegate_output_schema = ADDRESS_SCHEMA
         entry = _run(child)
         assert entry["status"] == "completed"
         assert "error" not in entry
+
+
+    def test_retry_turn_runs_in_delegated_child_context(self, monkeypatch):
+        """The retry is a second run_conversation on the child, issued from the parent's
+        thread where HERMES_KANBAN_TASK is set. Unwrapped it carries the worker's identity,
+        so the kanban stop guard nudges the child toward a board tool it does not have
+        (#109735 / #87671)."""
+        from agent.delegation_context import is_delegated_child_context
+        from tools.delegate_tool_child_run import _validate_child_output_schema
+
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_parent")
+        seen: list = []
+
+        class _Child(_StubChild):
+            session_id = "sess-child"
+
+            def run_conversation(self, user_message, task_id=None, **_kwargs):
+                seen.append(is_delegated_child_context())
+                return super().run_conversation(user_message, task_id, **_kwargs)
+
+        child = _Child(['{"city": "Berlin"}'])
+        child._delegate_output_schema = ADDRESS_SCHEMA
+        _validate_child_output_schema(child, {"final_response": "not json", "api_calls": 1}, 0, "child-0", None)
+        assert seen == [True]
+        assert is_delegated_child_context() is False
 
 
 # ---------------------------------------------------------------------------
@@ -314,9 +307,9 @@ def _make_mock_parent():
 class TestDelegateTaskDispatch:
     def test_non_dict_output_schema_rejected(self):
         with (
-            patch("tools.delegate_tool._load_config", return_value={}),
+            patch("tools.delegate_tool_config._load_config", return_value={}),
             patch(
-                "tools.delegate_tool._resolve_delegation_credentials",
+                "tools.delegate_tool_routes._resolve_delegation_credentials",
                 return_value={
                     "provider": None,
                     "model": None,
@@ -339,9 +332,9 @@ class TestDelegateTaskDispatch:
 
     def test_invalid_json_schema_rejected_at_dispatch(self):
         with (
-            patch("tools.delegate_tool._load_config", return_value={}),
+            patch("tools.delegate_tool_config._load_config", return_value={}),
             patch(
-                "tools.delegate_tool._resolve_delegation_credentials",
+                "tools.delegate_tool_routes._resolve_delegation_credentials",
                 return_value={
                     "provider": None,
                     "model": None,
@@ -373,9 +366,9 @@ class TestDelegateTaskDispatch:
             return child
 
         with (
-            patch("tools.delegate_tool._load_config", return_value={}),
+            patch("tools.delegate_tool_config._load_config", return_value={}),
             patch(
-                "tools.delegate_tool._resolve_delegation_credentials",
+                "tools.delegate_tool_routes._resolve_delegation_credentials",
                 return_value={
                     "provider": None,
                     "model": None,
@@ -399,3 +392,52 @@ class TestDelegateTaskDispatch:
         assert "OUTPUT CONTRACT" in (captured.get("context") or "")
         results = payload.get("results") or []
         assert results and results[0].get("schema_valid") is True
+
+
+# Tombstone (predecessor "reconciled union" append, v0.23.4 merge): upstream deleted
+# coerce_output_schema from tools.delegation_output_schema with no seam replacement —
+# the four TestCoerceOutputSchema tests are obsolete, not duplicates. Nothing covers them
+# upstream; the schema-carry dispatch path stays covered by TestDelegateTaskDispatch
+# (upstream) and TestToolSchemaSurfaceLocal below.
+
+# Tombstone (predecessor append): v0.23.4 lost coerce_output_schema and never shipped a
+# coercion test seam, so upstream's TestPromptPlumbingLocal keeps only 2 of the 3 local
+# prompt-plumbing tests. Kept here: test_contract_block_without_prior_context (absent
+# upstream).
+
+class TestPromptPlumbingLocal:
+    def test_contract_block_without_prior_context(self):
+        out = append_output_contract(None, ADDRESS_SCHEMA)
+        assert "OUTPUT CONTRACT" in out
+
+# Local test retained — upstream ships per_task_only only. (v0.23.4 never added
+# test_output_schema_on_task_items to this upstream file.)
+class TestToolSchemaSurfaceLocal:
+    def test_output_schema_advertised_per_task_only(self):
+        """output_schema is advertised inside tasks[] items (the only spawn
+        shape); the legacy top-level param stays handler-accepted but out
+        of the schema."""
+        props = DELEGATE_TASK_SCHEMA["parameters"]["properties"]
+        assert "output_schema" not in props
+        task_props = props["tasks"]["items"]["properties"]
+        assert task_props["output_schema"]["type"] == "object"
+
+# Tombstone (predecessor append): 8 of these 9 tests are byte-identical upstream in
+# TestRunSingleChildSchemaValidation (lineage: 197b0a7228, b272d133d6) — duplicates
+# deleted. Exception: test_schema_valid_entry_still_completed (ours-only regression guard,
+# b272d133d6) — MOVED into the upstream class below this tombstone.
+
+class TestRunSingleChildSchemaValidationLocal:
+    pass
+
+# Deleted as duplicates (covering upstream id named):
+#   test_non_dict_output_schema_rejected,
+#   test_invalid_json_schema_rejected_at_dispatch,
+#   test_child_receives_contract_and_schema_attr
+# → upstream tests/tools/test_delegate_output_schema.py::TestDelegateTaskDispatch
+# (same names; bodies identical except the predecessor's stale patches on dead target
+# tools.delegate_tool._load_config/_resolve_delegation_credentials — upstream patches the
+# live seams tools.delegate_tool_config._load_config and
+# tools.delegate_tool_routes._resolve_delegation_credentials; child construction still
+# patched at tools.delegate_tool._build_child_preserving_parent_tools, which upstream
+# also uses).

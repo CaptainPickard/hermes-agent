@@ -56,7 +56,9 @@ def _seed_unit(session_key: str, parent_session_id: str = "") -> MagicMock:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("session_state", ["idle", "busy"])
-async def test_stop_ends_background_delegations_of_the_session(monkeypatch, session_state):
+async def test_stop_ends_background_delegations_of_the_session(monkeypatch, tmp_path, session_state):
+    # Upstream now loads a persisted voice-mode file during runner construction.
+    monkeypatch.setattr(GatewayRunner, "_VOICE_MODE_PATH", tmp_path / "voice_modes.json")
     monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "u1")
     adapter = _Adapter()
     runner = GatewayRunner(config=GatewayConfig(platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="x")}))
